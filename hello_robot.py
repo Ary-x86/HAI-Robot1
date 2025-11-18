@@ -19,13 +19,22 @@ def main(session, details):
     )
 
     # 3. Start the music (non-blocking)
+    # yield session.call(
+    #     "rom.actuator.audio.stream",
+    #     url=(
+    #         "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/"
+    #         "refs/heads/main/audio/"
+    #         "i%20want%20some%20cheeseburgers%20just%20to%20eat%20"
+    #         "%28clean%20version%21%EF%BC%9F%29%20%5Buzl55C2ekFE%5D.mp3"
+    #     ),
+    #     sync=False,
+    # )
+
     yield session.call(
         "rom.actuator.audio.stream",
         url=(
-            "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/"
-            "refs/heads/main/audio/"
-            "i%20want%20some%20cheeseburgers%20just%20to%20eat%20"
-            "%28clean%20version%21%EF%BC%9F%29%20%5Buzl55C2ekFE%5D.mp3"
+            # "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/refs/heads/main/audio/i%20want%20some%20cheeseburgers%20just%20to%20eat%20%28clean%20version%21%EF%BC%9F%29%20%5Buzl55C2ekFE%5D.mp3",
+            "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/refs/heads/main/audio/i%20want%20some%20cheeseburgers%20just%20to%20eat%20(clean%20version!%EF%BC%9F)%20%5Buzl55C2ekFE%5D.mp3"
         ),
         sync=False,
     )
@@ -70,7 +79,8 @@ wamp = Component(
         "serializers": ["msgpack"],
         "max_retries": 0,
     }],
-    realm="rie.6918c48a375fb38004f5389f",
+    #realm="rie.6918c48a375fb38004f5389f",
+    realm="rie.691ce2fd82c3bec9b226dfc9",
 )
 
 wamp.on_join(main)
