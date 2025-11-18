@@ -34,7 +34,7 @@ def main(session, details):
         "rom.actuator.audio.stream",
         url=(
             # "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/refs/heads/main/audio/i%20want%20some%20cheeseburgers%20just%20to%20eat%20%28clean%20version%21%EF%BC%9F%29%20%5Buzl55C2ekFE%5D.mp3",
-            "https://raw.githubusercontent.com/Ary-x86/HAI-Robot1/refs/heads/main/audio/i%20want%20some%20cheeseburgers%20just%20to%20eat%20(clean%20version!%EF%BC%9F)%20%5Buzl55C2ekFE%5D.mp3"
+            "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/i%20want%20some%20cheeseburgers%20just%20to%20eat.mp3"
         ),
         sync=False,
     )
