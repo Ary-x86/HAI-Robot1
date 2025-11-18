@@ -8,12 +8,14 @@
 # uvicorn app.main:app --reload
 
 # # terminal 2 – robot brain
-# python robot_client.py
+# python robot/robot_client.py
 
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
+
 
 from .game_logic import (
     new_board,
@@ -27,6 +29,8 @@ from .game_logic import (
     COLS,
 )
 
+from .openai_agent import generate_taunt
+
 app = FastAPI(title="HAI – Connect-4 Robot Demo")
 
 
@@ -34,14 +38,18 @@ class MoveRequest(BaseModel):
     column: int
 
 
-# --- Global game state (simple in-memory single-game for now) ---
+#global game state (simple in-memory single-game for now)
 
 state = {
     "board": new_board(),
     "current_player": HUMAN,   # human always starts
     "game_over": False,
     "winner": None,           # 1, -1, "draw", or None
-    "turn_index": 0,          # increases every time /move is called
+    "turn_index": 0,          # increases every change (moves + resets)
+    # last line the robot should say about the game
+    "last_taunt": (
+        "Yo, I’m your Connect 4 robot. Drop a piece and let’s see if you can keep up."
+    ),
 }
 
 
@@ -63,12 +71,13 @@ def _snapshot():
         "ai_lead": ai_lead,
         "rows": ROWS,
         "cols": COLS,
+        "last_taunt": state.get("last_taunt"),
     }
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    # ultra-minimal frontend: draws board and uses fetch() to talk to API
+    # (this is exactly your HTML, unchanged)
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -263,6 +272,23 @@ async def get_state():
     return _snapshot()
 
 
+@app.post("/reset")
+async def reset_game():
+    """
+    Reset to a fresh board and bump turn_index so the robot notices.
+    """
+    state["board"] = new_board()
+    state["current_player"] = HUMAN
+    state["game_over"] = False
+    state["winner"] = None
+    state["turn_index"] += 1
+    # Static intro line; could also call generate_taunt with phase="intro".
+    state["last_taunt"] = (
+        "New game, same robot. Drop your first chip if you’re ready to lose again."
+    )
+    return _snapshot()
+
+
 @app.post("/move")
 async def play_move(req: MoveRequest):
     if state["game_over"]:
@@ -279,26 +305,49 @@ async def play_move(req: MoveRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    event_type = "midgame"
+
     winner = check_winner(board)
     if winner is not None:
         state["game_over"] = True
         state["winner"] = winner
-        state["current_player"] = HUMAN  # irrelevant now
-        state["turn_index"] += 1
-        return _snapshot()
+        event_type = (
+            "human_wins" if winner == HUMAN
+            else "robot_wins" if winner == AI
+            else "draw"
+        )
+    else:
+        # 2) AI move
+        ai_col = get_ai_move(board)
+        drop_piece(board, ai_col, AI)
+        winner2 = check_winner(board)
+        if winner2 is not None:
+            state["game_over"] = True
+            state["winner"] = winner2
+            event_type = (
+                "robot_wins" if winner2 == AI
+                else "human_wins" if winner2 == HUMAN
+                else "draw"
+            )
 
-    # 2) AI move
-    ai_col = get_ai_move(board)
-    drop_piece(board, ai_col, AI)
-    winner2 = check_winner(board)
-    if winner2 is not None:
-        state["game_over"] = True
-        state["winner"] = winner2
-        state["current_player"] = HUMAN
-        state["turn_index"] += 1
-        return _snapshot()
-
-    # 3) Next human turn
+    # 3) Next human turn (even if game_over, this is irrelevant but harmless)
     state["current_player"] = HUMAN
+
+    # 4) New event index
     state["turn_index"] += 1
+
+    # 5) Ask LLM for a line in a worker thread (so we don't block the event loop)
+    snap_for_llm = _snapshot()
+    snap_for_llm.pop("last_taunt", None)  # not needed as input
+
+    try:
+        state["last_taunt"] = await run_in_threadpool(
+            generate_taunt,
+            snap_for_llm,
+            event_type,
+        )
+    except Exception as e:
+        # generate_taunt already has its own fallback, this is just paranoia
+        print("LLM error in /move:", e)
+
     return _snapshot()

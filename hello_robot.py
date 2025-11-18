@@ -2,17 +2,26 @@ from autobahn.twisted.component import Component, run
 from twisted.internet.defer import inlineCallbacks
 from autobahn.twisted.util import sleep
 
-# tune these if you want
-MUSIC_SECONDS = 40      # roughly how long you want the song+dance to last
-DAB_SECONDS_EST = 4.0   # rough duration of one BlocklyDab animation in seconds
+# tune these 
+MUSIC_SECONDS = 40      #how long we want the song+dance to last
+DAB_SECONDS_EST = 4.0   #duration of one BlocklyDab animation in seconds
 
 @inlineCallbacks
 def main(session, details):
-    # 1. Make sure the robot is standing
+    #make bot stand
     yield session.call("rom.optional.behavior.play", name="BlocklyStand")
     yield sleep(1.0)
 
-    # 2. Intro line
+    yield session.call("rom.actuator.motor.write",
+        frames=[{"time": 400, "data": {"body.head.pitch": 0.1}},
+            {"time": 1200, "data": {"body.head.pitch": -0.1}},
+            {"time": 2000, "data": {"body.head.pitch": 0.1}},
+            {"time": 2400, "data": {"body.head.pitch": 0.0}}],
+        force=True
+    ) 
+
+
+
     yield session.call(
         "rie.dialogue.say",
         text="yo bro i really want to eat some cheeseburgers."
@@ -39,23 +48,23 @@ def main(session, details):
         sync=False,
     )
 
-    # 4. Keep dabbing while the music plays
+    #dab while music plays (should be a non audio behviour)
     danced = 0.0
     while danced < MUSIC_SECONDS:
-        # this call returns when the dab animation finishes
+        #to sync the dab stopping with the music, qwe can add any moves we want that should keep looping
         yield session.call("rom.optional.behavior.play", name="BlocklyDuck")
-        danced += DAB_SECONDS_EST   # just our rough estimate
+        danced += DAB_SECONDS_EST   #estimate
 
-    # 5. Stop the music right after the last dab
+    # stop music
     yield session.call("rom.actuator.audio.stop")
 
-    # 6. Outro line
+  
     yield session.call(
         "rie.dialogue.say",
-        text="Yo, dat was hard as fuck bro!!!"
+        text="Yo, dat was hard!!!"
     )
 
-    # 7. Optional: crouch / rest
+
     yield session.call("rom.optional.behavior.play", name="BlocklyApplause")
 
 
@@ -65,9 +74,9 @@ def main(session, details):
 
     yield session.call(
         "rie.dialogue.say",
-        text="six seven"
+        text="Anyway, let's continue playing"
     )
-    yield session.call("rom.optional.behavior.play", name="BlocklyCrouch")
+    #yield session.call("rom.optional.behavior.play", name="BlocklyCrouch")
 
     # 8. Disconnect
     session.leave()

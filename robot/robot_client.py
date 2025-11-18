@@ -1,11 +1,10 @@
-# robot_client.py
-
-# terminal 1 – web + game
-# uvicorn app.main:app --reload
-
-# # terminal 2 – robot brain
-# python robot_client.py
-
+# robot/robot_client.py
+#
+# terminal 1 – web + game:
+#   uvicorn app.main:app --reload
+#
+# terminal 2 – robot brain:
+#   python robot/robot_client.py
 
 import json
 
@@ -16,10 +15,11 @@ from twisted.web.client import Agent, readBody
 from twisted.web.http_headers import Headers
 from twisted.internet import reactor
 
-API_URL = b"http://127.0.0.1:8000/state"
+STATE_URL = b"http://127.0.0.1:8000/state"
+RESET_URL = b"http://127.0.0.1:8000/reset"
 
 # your robot realm from the portal:
-ROBOT_REALM = "rie.6918c48a375fb38004f5389f"
+ROBOT_REALM = "rie.691ce2fd82c3bec9b226dfc9"
 
 last_turn_index = -1  # remember last processed turn
 
@@ -29,58 +29,86 @@ def _parse_json(body_bytes: bytes):
 
 
 @inlineCallbacks
+def reset_game():
+    """
+    Ask the FastAPI backend to reset the Connect-4 game.
+    """
+    agent = Agent(reactor)
+    try:
+        resp = yield agent.request(
+            b"POST",
+            RESET_URL,
+            Headers({b"User-Agent": [b"robot-client"]}),
+            None,
+        )
+        body = yield readBody(resp)
+        print("[robot] Game reset response:", body[:120])
+    except Exception as e:
+        print("[robot] Error while calling /reset:", e)
+
+
+@inlineCallbacks
 def handle_snapshot(session, snapshot: dict):
     """
     Decide what the robot should say/do based on game snapshot.
+    LLM-generated banter comes in via snapshot['last_taunt'].
     """
     game_over = snapshot["game_over"]
     winner = snapshot["winner"]
-    ai_lead = snapshot["ai_lead"]
+    taunt = snapshot.get("last_taunt") or ""
 
-    # Keep robot in a "ready" posture
+    # Keep robot in a neutral "ready" posture
     yield session.call("rom.optional.behavior.play", name="BlocklyStand")
 
     if not game_over:
-        # Ongoing game, just trash talk based on lead
-        if ai_lead > 15:
-            text = "I'm farming you, this is brutal."
-        elif ai_lead > 7:
-            text = "You're kind of losing, you know that right?"
-        elif ai_lead < -15:
-            text = "Okay, wait, you're actually destroying me. Respect."
-        elif ai_lead < -7:
-            text = "Hmm, you're ahead. Don't get cocky though."
-        else:
-            text = "Close game so far. But I still think you'll fold in the end."
-
-        yield session.call("rie.dialogue.say", text=text)
+        # Mid-game or intro → just say the taunt line
+        if taunt:
+            yield session.call("rie.dialogue.say", text=taunt)
         return
 
-    # Game over → different behaviour
+    # --- Game over branches ---
+
     if winner == -1:
         # Robot / AI won
-        yield session.call("rie.dialogue.say",
-                           text="Good game. Come on, let's shake hands.")
-        # fake handshake using dab (we don't know the real handshake behavior)
+        if taunt:
+            yield session.call("rie.dialogue.say", text=taunt)
+
+        # Fake handshake troll
+        yield session.call(
+            "rie.dialogue.say",
+            text="Good game. Come on, let’s shake hands."
+        )
         yield session.call("rom.optional.behavior.play", name="BlocklyDab")
-        yield session.call("rie.dialogue.say",
-                           text="Just kidding. I don't shake hands with losers.")
+        yield session.call(
+            "rie.dialogue.say",
+            text="Just kidding. I don’t shake hands with losers."
+        )
         yield session.call("rom.optional.behavior.play", name="BlocklyCrouch")
+
+        # Prepare next round
+        yield reset_game()
 
     elif winner == 1:
         # Human won
-        yield session.call("rie.dialogue.say",
-                           text="Okay, okay. You actually beat me. That was clean.")
+        if taunt:
+            yield session.call("rie.dialogue.say", text=taunt)
         yield session.call("rom.optional.behavior.play", name="BlocklyWaveRightArm")
-        yield session.call("rie.dialogue.say",
-                           text="Don't get used to it though, rematch next time.")
+        yield session.call(
+            "rie.dialogue.say",
+            text="You actually beat me… alright, rematch next time."
+        )
+        yield reset_game()
 
     elif winner == "draw":
-        yield session.call("rie.dialogue.say",
-                           text="Draw. Mid game. Nobody wins, nobody loses.")
+        # Draw
+        if taunt:
+            yield session.call("rie.dialogue.say", text=taunt)
         yield session.call("rom.optional.behavior.play", name="BlocklyWaveRightArm")
-
-    # you can add more drama here if you want
+        yield session.call(
+            "rie.dialogue.say",
+            text="Draw game. Nobody clutched, that’s kinda mid."
+        )
+        yield reset_game()
 
 
 @inlineCallbacks
@@ -96,7 +124,7 @@ def poll_loop(session):
         try:
             response = yield agent.request(
                 b"GET",
-                API_URL,
+                STATE_URL,
                 Headers({b"User-Agent": [b"robot-client"]}),
                 None,
             )

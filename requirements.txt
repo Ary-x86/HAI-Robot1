@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+openai
+python-dotenv
+autobahn[twisted]
+twisted
+numpy
+soundfile
+pydantic
+python-multipart

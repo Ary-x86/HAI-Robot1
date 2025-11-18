@@ -1,0 +1,12 @@
+# venv / Python
+.venv/
+__pycache__/
+*.pyc
+
+# env / secrets
+.env
+
+# editor cruft
+.vscode/
+.idea/
+*.swp
