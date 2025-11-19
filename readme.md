@@ -1,3 +1,519 @@
+# IN CONTEXT: Robo Connect-4 – Virtual Robot + OpenAI
+
+**warningh: currently the LLM functionality does not work yet. But we have fallback responses, which will be on  the entire time.**
+
+
+This repo contains a small Connect-4 game where a **virtual robot** from the  
+Robots-in-de-Klas (RoboConneqt) portal plays against a human and talks trash
+using an **LLM (OpenAI gpt-5-nano)**.
+
+The project is built for the **Human-Agent Interaction (HAI)** course and is
+designed so that anyone in the group can set it up from scratch.
+
+---
+
+## 0. Requirements
+
+- Python **3.11+**
+- `pip` (and optionally `virtualenv`)
+- A browser
+- Internet connection (for OpenAI + Robots-in-de-Klas WAMP)
+- **Course keys:**
+  - RoboConneqt group code: `HDQN-XXXX-XXXX` (See brightspace for the code)
+  - OpenAI API key for the group (request from Joost; models allowed:
+    `gpt-5-nano`, `tts-1`, `whisper-1`)
+
+> **Important:**  
+> Do **not** commit any API keys (.env file) to GitHub/GitLab. If the key
+> leaks, it will be disabled.
+
+---
+
+## 1. Create a RoboConneqt account and virtual robot
+
+1. Go to **<https://portal.robotsindeklas.nl>**.
+2. Click **“Maak account / Use code”**.
+3. Enter the course key: **`HDQN-XXXX-XXXX`**.
+4. Choose a **group username** and **password**.  
+   - One account per group, shared by everyone.
+5. In **Organisation**, start typing **“Univ…”** and select  
+   **“Univ Leiden”** (or the equivalent Leiden University option).
+6. Finish registration and write down the username + password.
+7. Next time you can log in from **<https://portal.robotsindeklas.nl/#/home>**
+   with:
+   - Organisation: **Univ Leiden**
+   - Your group username + password. (See discord for our login)
+
+After logging in you can access:
+
+- **Start** – overview of available apps.
+- **My apps** – your own programs.
+- **Robots** – physical robots (if assigned) + the **Virtual Robot**.
+
+---
+
+## 2. Start the Virtual Robot and get the realm
+
+We mainly use the **Virtual Robot** (3D character in the browser).
+
+1. Log in at **<https://portal.robotsindeklas.nl/#/home>**.
+2. Click the **Robots** tab in the top navigation bar.
+3. You should see a tile named **“Virtual Robot”** (see screenshot in the repo).
+4. Make sure it is **online**:
+   - There should be a **green dot** at the top-left of the tile.
+   - If not, click the **green power/play button** to start it.
+5. Open the **menu** for that robot (hover the tile and use the small icon
+   with three horizontal lines / settings / or similar).
+6. In that menu, click the **“Copy example code / info”** / clipboard icon.
+7. In the popup, scroll to where you see something like:
+
+   ```text
+   realm="rie.691ce2fd82c3bec9b226dfc9",
+  ```
+
+The part starting with `rie.` is the **realm** of this virtual robot.
+
+8. Copy that value. We’ll call it:
+
+   ```text
+   RIDK_REALM = rie.691ce2fd82c3bec9b226dfc9
+   ```
+
+For this project we initially use:
+
+```text
+rie.691ce2fd82c3bec9b226dfc9
+```
+
+If you ever change to another robot or account, repeat the steps and update
+the realm everywhere.
+
+---
+
+## 3. Pause the default agent on the virtual robot
+
+The robot usually runs a default “classroom” agent. You **must pause** it,
+otherwise it can conflict with our code.
+
+1. On the **Robots** page, open the menu for **Virtual Robot**.
+2. Click the **pause / agent stop** icon.
+3. The robot (or the virtual robot) should say something like:
+
+   > “Agent is paused”
+4. Leave it paused whenever you run this Connect-4 project.
+
+This ensures that only **our application** sends dialogue to the robot.
+
+---
+
+## 4. Local project setup
+
+### 4.1 Clone the repo and install dependencies
+
+```bash
+# 1. Clone the repo
+git clone <REPO_URL>
+cd <REPO_FOLDER>
+
+# 2. (Optional but recommended) create a virtualenv
+python -m venv .venv
+source .venv/bin/activate      # Linux/macOS
+# .venv\Scripts\activate       # Windows
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+```
+
+### 4.2 Configure environment variables (`.env`)
+
+Create a file called `.env` in the project root (same folder as `app/`):
+
+```env
+# === OpenAI ===
+OPENAI_API_KEY=sk-...your-course-key-here...
+OPENAI_MODEL=gpt-5-nano
+
+# === Robots in de Klas (RIDK) ===
+RIDK_REALM=rie.691ce2fd82c3bec9b226dfc9
+RIDK_WAMP_URL=wss://wamp.robotsindeklas.nl
+```
+
+Notes:
+
+* `OPENAI_API_KEY` – ask Joost for your group key.
+* `OPENAI_MODEL` – must be one of the allowed models; we use `gpt-5-nano`.
+* `RIDK_REALM` – copy from the portal as described above.
+* `RIDK_WAMP_URL` – standard WAMP endpoint for Robots-in-de-Klas.
+
+The backend reads these via `python-dotenv` at startup.
+
+---
+
+## 5. Running the Connect-4 app
+
+### 5.1 Start backend + frontend
+
+From the project root:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+You should see something like:
+
+```text
+Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
+
+Open a browser and go to:
+
+> [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+You should see:
+
+* A **Connect-4 board**.
+* A score / status area.
+* A text area where the robot’s latest **taunt** is shown.
+
+### 5.2 Ensure robot connection
+
+As you play:
+
+* The **backend** will compute each move.
+* For each turn, it will generate a taunt via OpenAI and send it to the robot.
+* The **virtual robot** in the portal should speak those lines out loud.
+
+If the robot doesn’t talk but the game UI works, check:
+
+* Did you pause the default agent in the portal?
+* Is the **realm** correct in `.env`?
+* Is your device online (WAMP + OpenAI need internet)?
+* Is the OpenAI key valid?
+
+---
+
+## 6. Optional: Connectivity sanity check (`robot_ping.py`)
+
+If you want to validate the robot connection without running the whole app,
+you can create a small script `robot_ping.py` (if not already present):
+
+```python
+import os
+from autobahn.twisted.component import Component, run
+from twisted.internet.defer import inlineCallbacks
+
+REALM = os.getenv("RIDK_REALM", "rie.691ce2fd82c3bec9b226dfc9")
+WAMP_URL = os.getenv("RIDK_WAMP_URL", "wss://wamp.robotsindeklas.nl")
+
+component = Component(
+    transports=[{"url": WAMP_URL, "serializers": ["msgpack"]}],
+    realm=REALM,
+)
+
+@component.on_join
+@inlineCallbacks
+def joined(session, details):
+    # Simple one-shot test
+    yield session.call("rie.dialogue.say", text="Hello from the Connect four project!")
+    session.leave()
+
+if __name__ == "__main__":
+    run([component])
+```
+
+Run:
+
+```bash
+python robot_ping.py
+```
+
+Expected behaviour:
+
+* The virtual robot in the portal says
+  **“Hello from the Connect four project!”** and then stops.
+* If this works, your WAMP realm + URL are correct.
+
+---
+
+## 7. System architecture
+
+### 7.1 Components
+
+* **Human player**
+
+  * Clicks columns in the browser.
+* **Browser frontend**
+
+  * Renders the Connect-4 board and shows the latest taunt as text.
+  * Uses:
+
+    * `POST /move` – send a move.
+    * `GET /state` – poll the current game state.
+* **FastAPI backend (`app.main`)**
+
+  * Maintains the game state.
+  * Chooses robot moves.
+  * Calls the **LLM** to generate taunts.
+  * Sends taunts to the robot via the **RIDK WAMP API**.
+* **OpenAI Responses API (Python `openai` client)**
+
+  * Model: `gpt-5-nano`.
+  * Generates short, cocky, classroom-safe one-liners.
+* **Robots-in-de-Klas WAMP server**
+
+  * Exposes RPC calls like `rie.dialogue.say`.
+  * Routes our calls to the actual (virtual or physical) robot.
+* **Virtual Robot**
+
+  * Receives text and speaks it via TTS.
+  * Can perform animations (not heavily used in this project yet).
+
+---
+
+### 7.2 Data flow (overview)
+
+```text
+[Human player]
+      |
+      |  (click column)
+      v
+[Browser JS frontend]
+      |
+      |  POST /move  (column index)
+      v
+[FastAPI backend]
+      |
+      | 1. Update Connect-4 board
+      | 2. Compute snapshot (scores, ai_lead, winner, etc.)
+      | 3. Determine phase (intro / midgame / robot_wins / human_wins / draw)
+      | 4. generate_taunt(snapshot, phase) via OpenAI
+      | 5. Send text to RIDK: rie.dialogue.say(text=taunt)
+      v
+[RIDK WAMP server]
+      |
+      v
+[Virtual Robot]
+  (speaks the taunt)
+
+In parallel:
+
+[Browser JS frontend] <-- GET /state (polling)
+      ^
+      |  returns JSON:
+      |   - board
+      |   - whose_turn
+      |   - scores
+      |   - game_over / winner
+      |   - last_taunt (same as robot said)
+      |
+[FastAPI backend]
+```
+
+So the taunt reaches the player **twice**:
+
+1. As spoken output from the **robot**.
+2. As text in the **web UI** (from `/state`).
+
+---
+
+## 8. Game snapshot + conversation phases
+
+The backend compresses the game state into a **snapshot** before calling
+the LLM:
+
+```python
+{
+  "turn_index": int,        # how many moves played
+  "ai_score": int,          # heuristic evaluation for AI
+  "human_score": int,       # heuristic evaluation for human
+  "ai_lead": int,           # ai_score - human_score
+  "game_over": bool,
+  "winner": -1 | 0 | 1 | "draw" | None
+}
+```
+
+This snapshot is converted into a small string, for example:
+
+```text
+Turn_index=12, ai_score=5, human_score=2, ai_lead=3, game_over=False, winner=None.
+```
+
+Then the backend chooses a **phase**:
+
+* `intro`
+
+  * Used at the start of a new game (or first taunt).
+  * Purpose: invite the player, explain we’re playing Connect-4, light teasing.
+* `midgame`
+
+  * Used during normal play while `game_over == False` and `turn_index > 0`.
+  * Purpose: reactive comments, cocky but safe trash talk.
+  * Uses `ai_lead` to decide tone (behind, ahead, close game).
+* `robot_wins`
+
+  * Used when `game_over == True` and `winner == -1` (AI player).
+  * Purpose: smug “I won” while still respectful and non-toxic.
+* `human_wins`
+
+  * Used when `game_over == True` and `winner == 1`.
+  * Purpose: salty but respectful defeat, invite rematch.
+* `draw`
+
+  * Used when the game ends in a draw.
+  * Purpose: “mid” / joke that nobody clutched.
+
+For each phase there is a **phase-specific instruction** that gets appended to
+the **system prompt** describing the persona:
+
+```text
+You are 'Robo', an English-speaking robot playing Connect 4 against a human.
+You are cocky and slightly annoying, but never rude or profane.
+You use short, casual Gen Z-ish internet tone.
+You ALWAYS answer with ONE single sentence, no quotes, no bullet points.
+Max ~140 characters. Classroom-safe. No swearing, slurs, politics or sex.
+You talk directly to the human opponent, not about them in third person.
+```
+
+Example prompt fragment sent to OpenAI (simplified):
+
+```text
+[System]  (persona above + phase-specific instruction)
+[User]    Here is the current Connect 4 game summary as JSON-ish text:
+          Turn_index=12, ai_score=5, human_score=2, ai_lead=3,
+          game_over=False, winner=None.
+```
+
+The model returns **a single sentence**, which we:
+
+1. Truncate if it exceeds a hard limit (safety).
+2. Store as `last_taunt` in the backend state.
+3. Send to the robot with `rie.dialogue.say`.
+4. Expose through `GET /state` so the frontend can show it.
+
+---
+
+## 9. Fallback behaviour (no internet / API issues)
+
+If anything goes wrong with the OpenAI call (no key, network error,
+empty response, etc.), the backend calls `_fallback_taunt(snapshot, phase)`.
+
+This function is deterministic and uses simple rules:
+
+* If `game_over`:
+
+  * `winner == -1` → “GG, I told you I was built different.”
+  * `winner == 1`  → “Alright, you got me this time, respect.”
+  * `winner == "draw"` → “Draw game, kinda mid for both of us.”
+* Else (midgame):
+
+  * Very large positive `ai_lead` → “I’m lowkey speedrunning you right now.”
+  * Moderate positive `ai_lead`  → “I’m kinda ahead, you sure about that strategy?”
+  * Very negative `ai_lead`      → “Okay, chill, you’re actually stomping me.”
+  * Moderate negative `ai_lead`  → “You’re up right now, but don’t get comfy.”
+  * Otherwise                    → “Close game so far, one bad move and you’re cooked.”
+
+So the robot **always** has something to say, even without the LLM.
+
+---
+
+## 10. Example end-to-end interaction
+
+**1. Start**
+
+* Group logs into RoboConneqt, starts the **Virtual Robot**, pauses the
+  default agent.
+
+* They run:
+
+  ```bash
+  uvicorn app.main:app --reload
+  ```
+
+* They open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+* Backend calls `generate_taunt` with `phase="intro"`.
+
+* Robot says something like:
+
+  > “Yo, I’m your Connect 4 robot, drop a piece and let’s see if you can survive.”
+
+**2. Human move**
+
+* Player clicks a column.
+* Browser sends `POST /move` with column index.
+* Backend updates board, checks for a winner, calculates new snapshot.
+
+**3. Robot response**
+
+* Backend chooses AI’s column and applies it.
+* Snapshot shows AI slightly ahead → `phase="midgame"`.
+* OpenAI returns e.g.:
+
+  > “I’m kinda ahead, you sure that last move was the plan?”
+* Backend:
+
+  * Calls `rie.dialogue.say(text=...)`.
+  * Stores the taunt and returns new state.
+* Browser:
+
+  * Polls `GET /state`.
+  * Updates board + taunt text under/near the robot.
+
+**4. Game end**
+
+* Eventually `game_over=True`.
+* If AI wins → `phase="robot_wins"`.
+* OpenAI returns:
+
+  > “Told you, I’m built for this grid life.”
+* Robot speaks; UI shows final board + message.
+* Player can refresh / reset for a new game (which triggers `intro` again).
+
+This defines the full multimodal interaction loop:
+
+* **Visual** – Connect-4 board and UI in the browser.
+* **Verbal** – speech from the virtual robot driven by the LLM.
+* **Input** – mouse clicks (or touch) from the human.
+
+---
+
+## 11. Troubleshooting checklist
+
+If something is off, check in this order:
+
+1. **Portal**
+
+   * Are you logged into the correct **group account**?
+   * Is **Virtual Robot** online (green dot)?
+   * Is the **default agent paused**?
+
+2. **Realm / WAMP**
+
+   * Did you copy the exact `rie.*` realm into `.env`?
+   * Is `RIDK_WAMP_URL` set to `wss://wamp.robotsindeklas.nl`?
+
+3. **OpenAI**
+
+   * Does `.env` contain a valid `OPENAI_API_KEY`?
+   * Is `OPENAI_MODEL=gpt-5-nano`?
+
+4. **Backend logs**
+
+   * In the terminal running `uvicorn`, check for:
+
+     * Exceptions from OpenAI calls.
+     * Exceptions from the RIDK WAMP client.
+   * If the LLM fails you should still see the fallback taunts.
+
+5. **Network**
+
+   * Is the machine online (no VPN/firewall blocking WAMP or OpenAI)?
+
+
+
+
+
+
 # 🤖 Robo Connect 4 – HAI Project
 
 **warningh: currently the LLM functionality does not work yet. But we have fallback responses, which will be on  the entire time.**
@@ -482,512 +998,4 @@ If **Robo is silent** or you only see fallback taunts:
 
 ---
 
-
-# IN CONTEXT: Robo Connect-4 – Virtual Robot + OpenAI
-
-This repo contains a small Connect-4 game where a **virtual robot** from the  
-Robots-in-de-Klas (RoboConneqt) portal plays against a human and talks trash
-using an **LLM (OpenAI gpt-5-nano)**.
-
-The project is built for the **Human-Agent Interaction (HAI)** course and is
-designed so that anyone in the group can set it up from scratch.
-
----
-
-## 0. Requirements
-
-- Python **3.11+**
-- `pip` (and optionally `virtualenv`)
-- A browser
-- Internet connection (for OpenAI + Robots-in-de-Klas WAMP)
-- **Course keys:**
-  - RoboConneqt group code: `HDQN-WKNB-PTRS`
-  - OpenAI API key for the group (request from Joost; models allowed:
-    `gpt-5-nano`, `tts-1`, `whisper-1`)
-
-> **Important:**  
-> Do **not** commit any API keys (.env file) to GitHub/GitLab. If the key
-> leaks, it will be disabled.
-
----
-
-## 1. Create a RoboConneqt account and virtual robot
-
-1. Go to **<https://portal.robotsindeklas.nl>**.
-2. Click **“Maak account / Use code”**.
-3. Enter the course key: **`HDQN-WKNB-PTRS`**.
-4. Choose a **group username** and **password**.  
-   - One account per group, shared by everyone.
-5. In **Organisation**, start typing **“Univ…”** and select  
-   **“Univ Leiden”** (or the equivalent Leiden University option).
-6. Finish registration and write down the username + password.
-7. Next time you can log in from **<https://portal.robotsindeklas.nl/#/home>**
-   with:
-   - Organisation: **Univ Leiden**
-   - Your group username + password.
-
-After logging in you can access:
-
-- **Start** – overview of available apps.
-- **My apps** – your own programs.
-- **Robots** – physical robots (if assigned) + the **Virtual Robot**.
-
----
-
-## 2. Start the Virtual Robot and get the realm
-
-We mainly use the **Virtual Robot** (3D character in the browser).
-
-1. Log in at **<https://portal.robotsindeklas.nl/#/home>**.
-2. Click the **Robots** tab in the top navigation bar.
-3. You should see a tile named **“Virtual Robot”** (see screenshot in the repo).
-4. Make sure it is **online**:
-   - There should be a **green dot** at the top-left of the tile.
-   - If not, click the **green power/play button** to start it.
-5. Open the **menu** for that robot (hover the tile and use the small icon
-   with three horizontal lines / settings / or similar).
-6. In that menu, click the **“Copy example code / info”** / clipboard icon.
-7. In the popup, scroll to where you see something like:
-
-   ```text
-   realm="rie.691ce2fd82c3bec9b226dfc9",
-  ```
-
-The part starting with `rie.` is the **realm** of this virtual robot.
-
-8. Copy that value. We’ll call it:
-
-   ```text
-   RIDK_REALM = rie.691ce2fd82c3bec9b226dfc9
-   ```
-
-For this project we initially use:
-
-```text
-rie.691ce2fd82c3bec9b226dfc9
-```
-
-If you ever change to another robot or account, repeat the steps and update
-the realm everywhere.
-
----
-
-## 3. Pause the default agent on the virtual robot
-
-The robot usually runs a default “classroom” agent. You **must pause** it,
-otherwise it can conflict with our code.
-
-1. On the **Robots** page, open the menu for **Virtual Robot**.
-2. Click the **pause / agent stop** icon.
-3. The robot (or the virtual robot) should say something like:
-
-   > “Agent is paused”
-4. Leave it paused whenever you run this Connect-4 project.
-
-This ensures that only **our application** sends dialogue to the robot.
-
----
-
-## 4. Local project setup
-
-### 4.1 Clone the repo and install dependencies
-
-```bash
-# 1. Clone the repo
-git clone <REPO_URL>
-cd <REPO_FOLDER>
-
-# 2. (Optional but recommended) create a virtualenv
-python -m venv .venv
-source .venv/bin/activate      # Linux/macOS
-# .venv\Scripts\activate       # Windows
-
-# 3. Install Python dependencies
-pip install -r requirements.txt
-```
-
-### 4.2 Configure environment variables (`.env`)
-
-Create a file called `.env` in the project root (same folder as `app/`):
-
-```env
-# === OpenAI ===
-OPENAI_API_KEY=sk-...your-course-key-here...
-OPENAI_MODEL=gpt-5-nano
-
-# === Robots in de Klas (RIDK) ===
-RIDK_REALM=rie.691ce2fd82c3bec9b226dfc9
-RIDK_WAMP_URL=wss://wamp.robotsindeklas.nl
-```
-
-Notes:
-
-* `OPENAI_API_KEY` – ask Joost for your group key.
-* `OPENAI_MODEL` – must be one of the allowed models; we use `gpt-5-nano`.
-* `RIDK_REALM` – copy from the portal as described above.
-* `RIDK_WAMP_URL` – standard WAMP endpoint for Robots-in-de-Klas.
-
-The backend reads these via `python-dotenv` at startup.
-
----
-
-## 5. Running the Connect-4 app
-
-### 5.1 Start backend + frontend
-
-From the project root:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-You should see something like:
-
-```text
-Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-```
-
-Open a browser and go to:
-
-> [http://127.0.0.1:8000](http://127.0.0.1:8000)
-
-You should see:
-
-* A **Connect-4 board**.
-* A score / status area.
-* A text area where the robot’s latest **taunt** is shown.
-
-### 5.2 Ensure robot connection
-
-As you play:
-
-* The **backend** will compute each move.
-* For each turn, it will generate a taunt via OpenAI and send it to the robot.
-* The **virtual robot** in the portal should speak those lines out loud.
-
-If the robot doesn’t talk but the game UI works, check:
-
-* Did you pause the default agent in the portal?
-* Is the **realm** correct in `.env`?
-* Is your device online (WAMP + OpenAI need internet)?
-* Is the OpenAI key valid?
-
----
-
-## 6. Optional: Connectivity sanity check (`robot_ping.py`)
-
-If you want to validate the robot connection without running the whole app,
-you can create a small script `robot_ping.py` (if not already present):
-
-```python
-import os
-from autobahn.twisted.component import Component, run
-from twisted.internet.defer import inlineCallbacks
-
-REALM = os.getenv("RIDK_REALM", "rie.691ce2fd82c3bec9b226dfc9")
-WAMP_URL = os.getenv("RIDK_WAMP_URL", "wss://wamp.robotsindeklas.nl")
-
-component = Component(
-    transports=[{"url": WAMP_URL, "serializers": ["msgpack"]}],
-    realm=REALM,
-)
-
-@component.on_join
-@inlineCallbacks
-def joined(session, details):
-    # Simple one-shot test
-    yield session.call("rie.dialogue.say", text="Hello from the Connect four project!")
-    session.leave()
-
-if __name__ == "__main__":
-    run([component])
-```
-
-Run:
-
-```bash
-python robot_ping.py
-```
-
-Expected behaviour:
-
-* The virtual robot in the portal says
-  **“Hello from the Connect four project!”** and then stops.
-* If this works, your WAMP realm + URL are correct.
-
----
-
-## 7. System architecture
-
-### 7.1 Components
-
-* **Human player**
-
-  * Clicks columns in the browser.
-* **Browser frontend**
-
-  * Renders the Connect-4 board and shows the latest taunt as text.
-  * Uses:
-
-    * `POST /move` – send a move.
-    * `GET /state` – poll the current game state.
-* **FastAPI backend (`app.main`)**
-
-  * Maintains the game state.
-  * Chooses robot moves.
-  * Calls the **LLM** to generate taunts.
-  * Sends taunts to the robot via the **RIDK WAMP API**.
-* **OpenAI Responses API (Python `openai` client)**
-
-  * Model: `gpt-5-nano`.
-  * Generates short, cocky, classroom-safe one-liners.
-* **Robots-in-de-Klas WAMP server**
-
-  * Exposes RPC calls like `rie.dialogue.say`.
-  * Routes our calls to the actual (virtual or physical) robot.
-* **Virtual Robot**
-
-  * Receives text and speaks it via TTS.
-  * Can perform animations (not heavily used in this project yet).
-
----
-
-### 7.2 Data flow (overview)
-
-```text
-[Human player]
-      |
-      |  (click column)
-      v
-[Browser JS frontend]
-      |
-      |  POST /move  (column index)
-      v
-[FastAPI backend]
-      |
-      | 1. Update Connect-4 board
-      | 2. Compute snapshot (scores, ai_lead, winner, etc.)
-      | 3. Determine phase (intro / midgame / robot_wins / human_wins / draw)
-      | 4. generate_taunt(snapshot, phase) via OpenAI
-      | 5. Send text to RIDK: rie.dialogue.say(text=taunt)
-      v
-[RIDK WAMP server]
-      |
-      v
-[Virtual Robot]
-  (speaks the taunt)
-
-In parallel:
-
-[Browser JS frontend] <-- GET /state (polling)
-      ^
-      |  returns JSON:
-      |   - board
-      |   - whose_turn
-      |   - scores
-      |   - game_over / winner
-      |   - last_taunt (same as robot said)
-      |
-[FastAPI backend]
-```
-
-So the taunt reaches the player **twice**:
-
-1. As spoken output from the **robot**.
-2. As text in the **web UI** (from `/state`).
-
----
-
-## 8. Game snapshot + conversation phases
-
-The backend compresses the game state into a **snapshot** before calling
-the LLM:
-
-```python
-{
-  "turn_index": int,        # how many moves played
-  "ai_score": int,          # heuristic evaluation for AI
-  "human_score": int,       # heuristic evaluation for human
-  "ai_lead": int,           # ai_score - human_score
-  "game_over": bool,
-  "winner": -1 | 0 | 1 | "draw" | None
-}
-```
-
-This snapshot is converted into a small string, for example:
-
-```text
-Turn_index=12, ai_score=5, human_score=2, ai_lead=3, game_over=False, winner=None.
-```
-
-Then the backend chooses a **phase**:
-
-* `intro`
-
-  * Used at the start of a new game (or first taunt).
-  * Purpose: invite the player, explain we’re playing Connect-4, light teasing.
-* `midgame`
-
-  * Used during normal play while `game_over == False` and `turn_index > 0`.
-  * Purpose: reactive comments, cocky but safe trash talk.
-  * Uses `ai_lead` to decide tone (behind, ahead, close game).
-* `robot_wins`
-
-  * Used when `game_over == True` and `winner == -1` (AI player).
-  * Purpose: smug “I won” while still respectful and non-toxic.
-* `human_wins`
-
-  * Used when `game_over == True` and `winner == 1`.
-  * Purpose: salty but respectful defeat, invite rematch.
-* `draw`
-
-  * Used when the game ends in a draw.
-  * Purpose: “mid” / joke that nobody clutched.
-
-For each phase there is a **phase-specific instruction** that gets appended to
-the **system prompt** describing the persona:
-
-```text
-You are 'Robo', an English-speaking robot playing Connect 4 against a human.
-You are cocky and slightly annoying, but never rude or profane.
-You use short, casual Gen Z-ish internet tone.
-You ALWAYS answer with ONE single sentence, no quotes, no bullet points.
-Max ~140 characters. Classroom-safe. No swearing, slurs, politics or sex.
-You talk directly to the human opponent, not about them in third person.
-```
-
-Example prompt fragment sent to OpenAI (simplified):
-
-```text
-[System]  (persona above + phase-specific instruction)
-[User]    Here is the current Connect 4 game summary as JSON-ish text:
-          Turn_index=12, ai_score=5, human_score=2, ai_lead=3,
-          game_over=False, winner=None.
-```
-
-The model returns **a single sentence**, which we:
-
-1. Truncate if it exceeds a hard limit (safety).
-2. Store as `last_taunt` in the backend state.
-3. Send to the robot with `rie.dialogue.say`.
-4. Expose through `GET /state` so the frontend can show it.
-
----
-
-## 9. Fallback behaviour (no internet / API issues)
-
-If anything goes wrong with the OpenAI call (no key, network error,
-empty response, etc.), the backend calls `_fallback_taunt(snapshot, phase)`.
-
-This function is deterministic and uses simple rules:
-
-* If `game_over`:
-
-  * `winner == -1` → “GG, I told you I was built different.”
-  * `winner == 1`  → “Alright, you got me this time, respect.”
-  * `winner == "draw"` → “Draw game, kinda mid for both of us.”
-* Else (midgame):
-
-  * Very large positive `ai_lead` → “I’m lowkey speedrunning you right now.”
-  * Moderate positive `ai_lead`  → “I’m kinda ahead, you sure about that strategy?”
-  * Very negative `ai_lead`      → “Okay, chill, you’re actually stomping me.”
-  * Moderate negative `ai_lead`  → “You’re up right now, but don’t get comfy.”
-  * Otherwise                    → “Close game so far, one bad move and you’re cooked.”
-
-So the robot **always** has something to say, even without the LLM.
-
----
-
-## 10. Example end-to-end interaction
-
-**1. Start**
-
-* Group logs into RoboConneqt, starts the **Virtual Robot**, pauses the
-  default agent.
-
-* They run:
-
-  ```bash
-  uvicorn app.main:app --reload
-  ```
-
-* They open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-* Backend calls `generate_taunt` with `phase="intro"`.
-
-* Robot says something like:
-
-  > “Yo, I’m your Connect 4 robot, drop a piece and let’s see if you can survive.”
-
-**2. Human move**
-
-* Player clicks a column.
-* Browser sends `POST /move` with column index.
-* Backend updates board, checks for a winner, calculates new snapshot.
-
-**3. Robot response**
-
-* Backend chooses AI’s column and applies it.
-* Snapshot shows AI slightly ahead → `phase="midgame"`.
-* OpenAI returns e.g.:
-
-  > “I’m kinda ahead, you sure that last move was the plan?”
-* Backend:
-
-  * Calls `rie.dialogue.say(text=...)`.
-  * Stores the taunt and returns new state.
-* Browser:
-
-  * Polls `GET /state`.
-  * Updates board + taunt text under/near the robot.
-
-**4. Game end**
-
-* Eventually `game_over=True`.
-* If AI wins → `phase="robot_wins"`.
-* OpenAI returns:
-
-  > “Told you, I’m built for this grid life.”
-* Robot speaks; UI shows final board + message.
-* Player can refresh / reset for a new game (which triggers `intro` again).
-
-This defines the full multimodal interaction loop:
-
-* **Visual** – Connect-4 board and UI in the browser.
-* **Verbal** – speech from the virtual robot driven by the LLM.
-* **Input** – mouse clicks (or touch) from the human.
-
----
-
-## 11. Troubleshooting checklist
-
-If something is off, check in this order:
-
-1. **Portal**
-
-   * Are you logged into the correct **group account**?
-   * Is **Virtual Robot** online (green dot)?
-   * Is the **default agent paused**?
-
-2. **Realm / WAMP**
-
-   * Did you copy the exact `rie.*` realm into `.env`?
-   * Is `RIDK_WAMP_URL` set to `wss://wamp.robotsindeklas.nl`?
-
-3. **OpenAI**
-
-   * Does `.env` contain a valid `OPENAI_API_KEY`?
-   * Is `OPENAI_MODEL=gpt-5-nano`?
-
-4. **Backend logs**
-
-   * In the terminal running `uvicorn`, check for:
-
-     * Exceptions from OpenAI calls.
-     * Exceptions from the RIDK WAMP client.
-   * If the LLM fails you should still see the fallback taunts.
-
-5. **Network**
-
-   * Is the machine online (no VPN/firewall blocking WAMP or OpenAI)?
 
