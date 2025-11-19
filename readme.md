@@ -33,7 +33,7 @@ designed so that anyone in the group can set it up from scratch.
 
 1. Go to **<https://portal.robotsindeklas.nl>**.
 2. Click **“Maak account / Use code”**.
-3. Enter the course key: **`HDQN-XXXX-XXXX`**.
+3. Enter the course key: **`HDQN-XXXX-XXXX`**. (See brightspace for the code)
 4. Choose a **group username** and **password**.  
    - One account per group, shared by everyone.
 5. In **Organisation**, start typing **“Univ…”** and select  
