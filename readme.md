@@ -144,79 +144,7 @@ POST /reset
 
 ---
 
-## 5. Realm Setup (Course Deployment)
-
-> **Note:** exact names may differ depending on your university’s system (“Realm”, “WebLab Realm”, etc.). Adjust the URL and labels to match your course instructions.
-
-### 5.1 Log in to the Realm
-
-1. Go to the Realm URL provided by the course
-   (e.g. `https://realm.<university-domain>/` or a link in Brightspace).
-2. Click **Log in** / **Sign in with university account**.
-3. Use your **university credentials** (same as email / Brightspace).
-
-### 5.2 Create or copy the project Realm
-
-You usually have two options:
-
-* **Option A – Import from Git**
-
-  1. In Realm, click **New Project** / **Import from Git**.
-  2. Paste your repository URL:
-     `https://github.com/<your-org>/HAI-Project.git`
-  3. Select **Python / FastAPI** or a generic web app template.
-  4. Confirm and create.
-
-* **Option B – Copy provided Realm**
-
-  1. If the teacher gave a **template Realm** link, open it.
-  2. Click **Copy Realm** / **Fork** / **Duplicate**.
-  3. You now have your own Realm instance.
-
-### 5.3 Configure environment variables in Realm
-
-In the Realm UI:
-
-1. Open **Settings** → **Environment variables** (or similar).
-
-2. Add:
-
-   * `OPENAI_API_KEY` → your real key
-   * `OPENAI_MODEL` → `gpt-5-nano`
-
-3. Save & redeploy / restart the Realm.
-
-### 5.4 Configure the run command
-
-In Realm’s project settings, set the **run/start command** to:
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Sometimes the environment expects:
-
-* a `Procfile` with
-  `web: uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-* or a “Start command” field in the UI.
-
-Whatever the platform uses, the important part is:
-
-* **Python entrypoint**: `app.main:app`
-* Use **Uvicorn**
-* Bind to **0.0.0.0** and the provided port
-
-### 5.5 Open the deployed game
-
-Once Realm says the app is running:
-
-* Click **Open in browser** or **Visit site**
-* You should see the same Connect 4 UI as locally
-* Confirm:
-
-  * You can make moves
-  * The robot taunts appear in the UI (if API key is set)
-
+## 5. 
 ---
 
 ## 6. LLM Integration (Robo’s Taunts)
@@ -623,7 +551,7 @@ We mainly use the **Virtual Robot** (3D character in the browser).
 
    ```text
    realm="rie.691ce2fd82c3bec9b226dfc9",
-````
+  ```
 
 The part starting with `rie.` is the **realm** of this virtual robot.
 
