@@ -50,21 +50,26 @@ After logging in you can access:
 - **My apps** – your own programs.
 - **Robots** – physical robots (if assigned) + the **Virtual Robot**.
 
+<img width="2558" height="428" alt="image" src="https://github.com/user-attachments/assets/014d4f95-5213-407d-a394-035cbaf79192" />
+
+
 ---
 
 ## 2. Start the Virtual Robot and get the realm
 
 We mainly use the **Virtual Robot** (3D character in the browser).
+<img width="2554" height="843" alt="image" src="https://github.com/user-attachments/assets/ea72c126-c026-4bb0-91a0-30fdad1e440e" />
+
 
 1. Log in at **<https://portal.robotsindeklas.nl/#/home>**.
 2. Click the **Robots** tab in the top navigation bar.
 3. You should see a tile named **“Virtual Robot”** (see screenshot in the repo).
 4. Make sure it is **online**:
-   - There should be a **green dot** at the top-left of the tile.
-   - If not, click the **green power/play button** to start it.
+   - There should be a **green button** at the top-left of the tile.
+   - If not, click the **red power/play button** to start it.
 5. Open the **menu** for that robot (hover the tile and use the small icon
    with three horizontal lines / settings / or similar).
-6. In that menu, click the **“Copy example code / info”** / clipboard icon.
+6. In that menu, click the pause the robot to stop running the pre-instelled program. Then go to **“Copy example code / info”** / clipboard icon.
 7. In the popup, scroll to where you see something like:
 
    ```text
@@ -78,6 +83,11 @@ The part starting with `rie.` is the **realm** of this virtual robot.
    ```text
    RIDK_REALM = rie.691ce2fd82c3bec9b226dfc9
    ```
+
+<img width="1929" height="835" alt="image" src="https://github.com/user-attachments/assets/e22a309e-82b2-4a44-be1d-0ac932d747c4" />
+
+<img width="7778" height="2216" alt="image" src="https://github.com/user-attachments/assets/4191cea4-456b-4efa-b67c-6c5886d62a45" />
+
 
 For this project we initially use:
 
@@ -93,7 +103,7 @@ the realm everywhere.
 ## 3. Pause the default agent on the virtual robot
 
 The robot usually runs a default “classroom” agent. You **must pause** it,
-otherwise it can conflict with our code.
+otherwise it can conflict with our code. Make sure to do this  (see image above)
 
 1. On the **Robots** page, open the menu for **Virtual Robot**.
 2. Click the **pause / agent stop** icon.
