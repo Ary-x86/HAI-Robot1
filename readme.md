@@ -39,245 +39,251 @@ HAI-Project/
 ├── requirements.txt
 ├── .env.example          # Example environment variables
 └── README.md             # This file
+````
 
-2. Prerequisites
+---
+
+## 2. Prerequisites
 
 You’ll need:
 
-    Python ≥ 3.9 (we use 3.13 in the venv)
+* **Python** ≥ 3.9 (we use 3.13 in the venv)
+* `pip` / `venv`
+* An **OpenAI API key**
+* Access to your uni’s **Realm** (or similar deployment environment)
 
-    pip / venv
+---
 
-    An OpenAI API key
+## 3. Local Setup (Development)
 
-    Access to your uni’s Realm (or similar deployment environment)
+### 3.1 Clone the project
 
-3. Local Setup (Development)
-3.1 Clone the project
-
+```bash
 git clone <YOUR_REPO_URL> HAI-Project
 cd HAI-Project
+```
 
-3.2 Create & activate a virtual environment
+### 3.2 Create & activate a virtual environment
 
+```bash
 python3 -m venv .venv
 source .venv/bin/activate    # Linux/macOS
 # .venv\Scripts\activate     # Windows PowerShell
+```
 
-3.3 Install Python dependencies
+### 3.3 Install Python dependencies
 
-Make sure openai 2.x is installed:
+Make sure `openai` 2.x is installed:
 
+```bash
 pip install -r requirements.txt
 # or if needed:
 pip install "openai>=2.8.1"
+```
 
-3.4 Configure environment variables (.env)
+### 3.4 Configure environment variables (`.env`)
 
-Create a .env file in the project root:
+Create a `.env` file in the project root:
 
+```bash
 cp .env.example .env
+```
 
-Open .env and set at least:
+Open `.env` and set at least:
 
+```env
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5-nano
+```
 
-    If OPENAI_API_KEY is missing, the code falls back to hardcoded taunts and will log that it’s using the fallback.
+> If `OPENAI_API_KEY` is missing, the code falls back to **hardcoded taunts** and will log that it’s using the fallback.
 
-4. Running the Game Locally
+---
+
+## 4. Running the Game Locally
 
 From the project root (with the venv active):
 
+```bash
 uvicorn app.main:app --reload
+```
 
 You should see something like:
 
+```text
 Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
 
 Now open a browser:
 
-    http://127.0.0.1:8000/
+> [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 
 You should see:
 
-    The Connect 4 board
+* The **Connect 4 board**
+* A way to **drop pieces**
+* Robo’s **taunts** appearing when:
 
-    A way to drop pieces
-
-    Robo’s taunts appearing when:
-
-        A new game starts (intro)
-
-        During mid-game moves
-
-        When the game ends (win/lose/draw)
+  * A new game starts (intro)
+  * During mid-game moves
+  * When the game ends (win/lose/draw)
 
 The game UI periodically calls:
 
-    GET /state – get the current board + scores + last taunt
-
-    POST /move – send the human move (column)
-
-    POST /reset – start a new game
+* `GET /state` – get the current board + scores + last taunt
+* `POST /move` – send the human move (column)
+* `POST /reset` – start a new game
 
 You already saw these in the logs:
 
+```text
 GET /state
 POST /move
 POST /reset
+```
 
-5. Realm Setup (Course Deployment)
+---
 
-    Note: exact names may differ depending on your university’s system (“Realm”, “WebLab Realm”, etc.). Adjust the URL and labels to match your course instructions.
+## 5. Realm Setup (Course Deployment)
 
-5.1 Log in to the Realm
+> **Note:** exact names may differ depending on your university’s system (“Realm”, “WebLab Realm”, etc.). Adjust the URL and labels to match your course instructions.
 
-    Go to the Realm URL provided by the course
-    (e.g. https://realm.<university-domain>/ or a link in Brightspace).
+### 5.1 Log in to the Realm
 
-    Click Log in / Sign in with university account.
+1. Go to the Realm URL provided by the course
+   (e.g. `https://realm.<university-domain>/` or a link in Brightspace).
+2. Click **Log in** / **Sign in with university account**.
+3. Use your **university credentials** (same as email / Brightspace).
 
-    Use your university credentials (same as email / Brightspace).
-
-5.2 Create or copy the project Realm
+### 5.2 Create or copy the project Realm
 
 You usually have two options:
 
-    Option A – Import from Git
+* **Option A – Import from Git**
 
-        In Realm, click New Project / Import from Git.
+  1. In Realm, click **New Project** / **Import from Git**.
+  2. Paste your repository URL:
+     `https://github.com/<your-org>/HAI-Project.git`
+  3. Select **Python / FastAPI** or a generic web app template.
+  4. Confirm and create.
 
-        Paste your repository URL:
-        https://github.com/<your-org>/HAI-Project.git
+* **Option B – Copy provided Realm**
 
-        Select Python / FastAPI or a generic web app template.
+  1. If the teacher gave a **template Realm** link, open it.
+  2. Click **Copy Realm** / **Fork** / **Duplicate**.
+  3. You now have your own Realm instance.
 
-        Confirm and create.
-
-    Option B – Copy provided Realm
-
-        If the teacher gave a template Realm link, open it.
-
-        Click Copy Realm / Fork / Duplicate.
-
-        You now have your own Realm instance.
-
-5.3 Configure environment variables in Realm
+### 5.3 Configure environment variables in Realm
 
 In the Realm UI:
 
-    Open Settings → Environment variables (or similar).
+1. Open **Settings** → **Environment variables** (or similar).
 
-    Add:
+2. Add:
 
-        OPENAI_API_KEY → your real key
+   * `OPENAI_API_KEY` → your real key
+   * `OPENAI_MODEL` → `gpt-5-nano`
 
-        OPENAI_MODEL → gpt-5-nano
+3. Save & redeploy / restart the Realm.
 
-    Save & redeploy / restart the Realm.
+### 5.4 Configure the run command
 
-5.4 Configure the run command
+In Realm’s project settings, set the **run/start command** to:
 
-In Realm’s project settings, set the run/start command to:
-
+```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
 Sometimes the environment expects:
 
-    a Procfile with
-    web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
-    or a “Start command” field in the UI.
+* a `Procfile` with
+  `web: uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+* or a “Start command” field in the UI.
 
 Whatever the platform uses, the important part is:
 
-    Python entrypoint: app.main:app
+* **Python entrypoint**: `app.main:app`
+* Use **Uvicorn**
+* Bind to **0.0.0.0** and the provided port
 
-    Use Uvicorn
-
-    Bind to 0.0.0.0 and the provided port
-
-5.5 Open the deployed game
+### 5.5 Open the deployed game
 
 Once Realm says the app is running:
 
-    Click Open in browser or Visit site
+* Click **Open in browser** or **Visit site**
+* You should see the same Connect 4 UI as locally
+* Confirm:
 
-    You should see the same Connect 4 UI as locally
+  * You can make moves
+  * The robot taunts appear in the UI (if API key is set)
 
-    Confirm:
+---
 
-        You can make moves
+## 6. LLM Integration (Robo’s Taunts)
 
-        The robot taunts appear in the UI (if API key is set)
+### 6.1 High-level
 
-6. LLM Integration (Robo’s Taunts)
-6.1 High-level
-
-The LLM is used in exactly one place:
-app/openai_agent.py → generate_taunt(snapshot, phase)
+The LLM is used in **exactly one place**:
+`app/openai_agent.py → generate_taunt(snapshot, phase)`
 
 It takes:
 
-    a snapshot of the game state (scores, winner, etc.)
-
-    a phase label describing where we are in the conversation
+* a **snapshot** of the game state (scores, winner, etc.)
+* a **phase** label describing where we are in the conversation
 
 and returns:
 
-    one short English sentence of banter.
+* **one short English sentence** of banter.
 
 Phases:
 
-    "intro" – start of a new game
+* `"intro"` – start of a new game
+* `"midgame"` – game in progress
+* `"robot_wins"` – robot just won
+* `"human_wins"` – human just won
+* `"draw"` – game ended in a draw
 
-    "midgame" – game in progress
+If **anything goes wrong** (wrong key, no internet, API error),
+we fall back to `_fallback_taunt`, a deterministic rule-based taunt generator.
 
-    "robot_wins" – robot just won
-
-    "human_wins" – human just won
-
-    "draw" – game ended in a draw
-
-If anything goes wrong (wrong key, no internet, API error),
-we fall back to _fallback_taunt, a deterministic rule-based taunt generator.
-6.2 Snapshot format
+### 6.2 Snapshot format
 
 The snapshot is compressed into text like:
 
+```text
 Turn_index=5, ai_score=2, human_score=1, ai_lead=1, game_over=False, winner=None.
+```
 
-6.3 System + phase instructions
+### 6.3 System + phase instructions
 
 System base prompt (simplified):
 
+```text
 You are 'Robo', an English-speaking robot playing Connect 4 against a human.
 You are cocky and slightly annoying, but never rude or profane.
 You use short, casual Gen Z-ish internet tone.
 You ALWAYS answer with ONE single sentence, no quotes, no bullet points.
 Max ~140 characters. Classroom-safe. No swearing, slurs, politics or sex.
 You talk directly to the human opponent, not about them in third person.
+```
 
 Per-phase instructions (examples):
 
-    intro: “Invite the human to start a new game, confident & teasing.”
+* `intro`: “Invite the human to start a new game, confident & teasing.”
+* `midgame`: “Comment on who’s ahead based on scores; light trash talk.”
+* `robot_wins`: “Robot smug win; lightly roast human.”
+* `human_wins`: “Salty but respectful; admit defeat, suggest rematch.”
+* `draw`: “Call it mid / no one clutched.”
 
-    midgame: “Comment on who’s ahead based on scores; light trash talk.”
+These are glued together with the snapshot into one **prompt_text**.
 
-    robot_wins: “Robot smug win; lightly roast human.”
+### 6.4 Using the **Responses API** (correct OpenAI v2 style)
 
-    human_wins: “Salty but respectful; admit defeat, suggest rematch.”
-
-    draw: “Call it mid / no one clutched.”
-
-These are glued together with the snapshot into one prompt_text.
-6.4 Using the Responses API (correct OpenAI v2 style)
-
-The important part: we use client.responses.create with model="gpt-5-nano".
+The important part: we use **`client.responses.create`** with `model="gpt-5-nano"`.
 
 Core logic (clean, up-to-date pattern):
 
+```python
 # app/openai_agent.py
 
 from typing import Dict, Any
@@ -339,20 +345,22 @@ def generate_taunt(snapshot: Dict[str, Any], phase: str = "midgame") -> str:
     except Exception as e:
         logging.exception("LLM generate_taunt failed, falling back: %s", e)
         return _fallback_taunt(snapshot, phase)
+```
 
 Key points (to avoid the bugs you saw):
 
-    Use resp.output_text instead of indexing resp.output[0].content[...]
+* Use **`resp.output_text`** instead of indexing `resp.output[0].content[...]`
+* Do **not** send `temperature` for `gpt-5-nano` (it only supports the default)
+* Use `max_output_tokens`, **not** `max_completion_tokens`
+* Always have a **fallback** if the response is empty or exceptions occur
 
-    Do not send temperature for gpt-5-nano (it only supports the default)
+---
 
-    Use max_output_tokens, not max_completion_tokens
+## 7. Conversation & Interaction Flow
 
-    Always have a fallback if the response is empty or exceptions occur
+### 7.1 High-level Architecture
 
-7. Conversation & Interaction Flow
-7.1 High-level Architecture
-
+```text
 [Human Player]
      |
      v
@@ -382,9 +390,11 @@ GET /state  (Frontend polling after each move)
      |
      v
 [Browser UI shows board + Robo's taunt bubble]
+```
 
-7.2 Conversation phases (finite-state sketch)
+### 7.2 Conversation phases (finite-state sketch)
 
+```text
                     +-----------------+
                     |  START / INTRO  |
                     +-----------------+
@@ -413,139 +423,129 @@ GET /state  (Frontend polling after each move)
                        |   winner="draw" -> phase="draw"
                        |
                        +-----------------------------+
+```
 
-7.3 When is the LLM called?
+### 7.3 When is the LLM called?
 
-    On new game:
+* On **new game**:
 
-        Backend sets phase="intro"
+  * Backend sets `phase="intro"`
+  * `generate_taunt(snapshot, "intro")`
 
-        generate_taunt(snapshot, "intro")
+* On **each move** (optional, depending on your implementation):
 
-    On each move (optional, depending on your implementation):
+  * While `game_over=False`, `phase="midgame"`
+  * `generate_taunt(snapshot, "midgame")`
 
-        While game_over=False, phase="midgame"
+* On **game over**:
 
-        generate_taunt(snapshot, "midgame")
+  * If robot wins → `phase="robot_wins"`
+  * If human wins → `phase="human_wins"`
+  * If draw → `phase="draw"`
 
-    On game over:
+If OpenAI fails at any point → `_fallback_taunt(snapshot, phase)`
+So the UI **always** gets some taunt string to show.
 
-        If robot wins → phase="robot_wins"
+---
 
-        If human wins → phase="human_wins"
+## 8. How to Actually Play (Step-by-Step For Teammates)
 
-        If draw → phase="draw"
+1. **Get access**
 
-If OpenAI fails at any point → _fallback_taunt(snapshot, phase)
-So the UI always gets some taunt string to show.
-8. How to Actually Play (Step-by-Step For Teammates)
+   * Clone the repo locally **or**
+   * Open the team Realm project if it’s already set up.
 
-    Get access
+2. **Set your API key**
 
-        Clone the repo locally or
+   * Locally → `.env`
+   * Realm → project settings → env vars
 
-        Open the team Realm project if it’s already set up.
+3. **Run the server**
 
-    Set your API key
+   * Locally: `uvicorn app.main:app --reload`
+   * Realm: click **Run / Deploy** (platform-dependent)
 
-        Locally → .env
+4. **Open the game in a browser**
 
-        Realm → project settings → env vars
+   * Local: `http://127.0.0.1:8000/`
+   * Realm: use the **Public URL** / “Open in browser” button
 
-    Run the server
+5. **Start a game**
 
-        Locally: uvicorn app.main:app --reload
+   * Click “New game” / “Reset” if needed
+   * You should see an intro taunt from Robo
 
-        Realm: click Run / Deploy (platform-dependent)
+6. **Play**
 
-    Open the game in a browser
+   * Click on a column to drop your piece
+   * Robot responds with moves + taunts
+   * At the end, it will roast you or be salty, depending on who wins
 
-        Local: http://127.0.0.1:8000/
+---
 
-        Realm: use the Public URL / “Open in browser” button
+## 9. Debugging Checklist
 
-    Start a game
+If **Robo is silent** or you only see fallback taunts:
 
-        Click “New game” / “Reset” if needed
+1. **Check the logs**
 
-        You should see an intro taunt from Robo
+   You should see entries like:
 
-    Play
+   ```text
+   INFO:  127.0.0.1:XXXXX - "POST /move HTTP/1.1" 200 OK
+   ERROR:root:LLM generate_taunt failed, falling back: ...
+   ```
 
-        Click on a column to drop your piece
+   If you see “LLM generate_taunt failed, falling back”, the LLM call is breaking.
 
-        Robot responds with moves + taunts
+2. **Common issues**
 
-        At the end, it will roast you or be salty, depending on who wins
+   * **No API key**
 
-9. Debugging Checklist
+     * Fix: set `OPENAI_API_KEY` in `.env` or Realm env vars
 
-If Robo is silent or you only see fallback taunts:
+   * **Wrong model / unsupported parameter**
 
-    Check the logs
+     * Ensure `OPENAI_MODEL=gpt-5-nano` (or another valid model)
+     * Do **not** pass `temperature` for `gpt-5-nano`
+     * Use `max_output_tokens`, not `max_completion_tokens`
 
-    You should see entries like:
+   * **Response object indexing**
 
-INFO:  127.0.0.1:XXXXX - "POST /move HTTP/1.1" 200 OK
-ERROR:root:LLM generate_taunt failed, falling back: ...
+     * Use `resp.output_text` instead of deep indexing fields
 
-If you see “LLM generate_taunt failed, falling back”, the LLM call is breaking.
+3. **Test LLM call in isolation**
 
-Common issues
+   From a Python shell in the venv:
 
-    No API key
+   ```python
+   from openai import OpenAI
+   import os
 
-        Fix: set OPENAI_API_KEY in .env or Realm env vars
+   client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    Wrong model / unsupported parameter
+   resp = client.responses.create(
+       model=os.getenv("OPENAI_MODEL", "gpt-5-nano"),
+       input="Say 'this is a test taunt' in one short sentence."
+   )
 
-        Ensure OPENAI_MODEL=gpt-5-nano (or another valid model)
+   print(resp.output_text)
+   ```
 
-        Do not pass temperature for gpt-5-nano
+   If this fails, your API setup is wrong. Fix that first.
 
-        Use max_output_tokens, not max_completion_tokens
+---
 
-    Response object indexing
+## 10. Summary
 
-        Use resp.output_text instead of deep indexing fields
+* This repo is a **Connect 4 HAI demo** with a taunting LLM-powered robot.
+* You run it via **FastAPI + Uvicorn** (`uvicorn app.main:app`).
+* The **LLM taunts** live in `openai_agent.py → generate_taunt`.
+* The **Responses API** is used with the **modern OpenAI Python SDK**.
+* If anything fails, a deterministic **fallback taunt** keeps the game playable.
+* This README is meant so **any teammate** can:
 
-Test LLM call in isolation
-
-From a Python shell in the venv:
-
-    from openai import OpenAI
-    import os
-
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-    resp = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-5-nano"),
-        input="Say 'this is a test taunt' in one short sentence."
-    )
-
-    print(resp.output_text)
-
-    If this fails, your API setup is wrong. Fix that first.
-
-10. Summary
-
-    This repo is a Connect 4 HAI demo with a taunting LLM-powered robot.
-
-    You run it via FastAPI + Uvicorn (uvicorn app.main:app).
-
-    The LLM taunts live in openai_agent.py → generate_taunt.
-
-    The Responses API is used with the modern OpenAI Python SDK.
-
-    If anything fails, a deterministic fallback taunt keeps the game playable.
-
-    This README is meant so any teammate can:
-
-        log into the Realm,
-
-        configure env vars,
-
-        run the app,
-
-        and understand how the whole conversation flow works end-to-end.
-
+  * log into the Realm,
+  * configure env vars,
+  * run the app,
+  * and understand **how the whole conversation flow works** end-to-end.
