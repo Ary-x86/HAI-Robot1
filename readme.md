@@ -86,7 +86,9 @@ The part starting with `rie.` is the **realm** of this virtual robot.
 
 <img width="1929" height="835" alt="image" src="https://github.com/user-attachments/assets/e22a309e-82b2-4a44-be1d-0ac932d747c4" />
 
-<img width="7778" height="2216" alt="image" src="https://github.com/user-attachments/assets/4191cea4-456b-4efa-b67c-6c5886d62a45" />
+<img width="3945" height="2193" alt="image" src="https://github.com/user-attachments/assets/258a62cd-9f89-4e3e-b7f2-e561858b075a" />
+
+
 
 
 For this project we initially use:
