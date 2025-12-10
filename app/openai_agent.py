@@ -81,7 +81,7 @@ def _fallback_taunt(snapshot: Dict[str, Any], phase: str) -> str:
         if lead > 4:
             return "I’m kinda ahead, you sure about that strategy?"
         if lead < -10:
-            return "Okay, chill, you’re actually stomping me."
+            return "Okay, chill, you’re actually stomping me. ts pmo brochacho"
         if lead < -4:
             return "You’re up right now, but don’t get comfy."
         return "Close game so far, one bad move and you’re cooked."
