@@ -12,8 +12,8 @@ __pycache__/
 *.swp
 
 #old robot files
-app/robot_client_old*
-app/robot_brain_old*
+robot/robot_client_old*
+robot/robot_brain_old*
 robot_client_old*
 robot_brain_old*
 
