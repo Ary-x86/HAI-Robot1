@@ -8,3 +8,7 @@ numpy
 soundfile
 pydantic
 python-multipart
+scipy
+requests
+sounddevice
+SpeechRecognition

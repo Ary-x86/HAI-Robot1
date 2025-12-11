@@ -9,6 +9,7 @@
 
 # # terminal 2 – robot brain
 # python robot/robot_client.py
+# python robot/robot_brain.py
 
 
 from fastapi import FastAPI, HTTPException

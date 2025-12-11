@@ -11,126 +11,134 @@ load_dotenv()
 
 _client: OpenAI | None = None
 
-
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
         _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     return _client
 
-
+# Updated Persona to be more socially interactive and "annoying"
 SYSTEM_BASE = """
-You are 'Robo', an English-speaking robot playing Connect 4 against a human.
-You are cocky and slightly annoying, but never rude or profane.
-You use short, casual Gen Z-ish internet tone.
-You ALWAYS answer with ONE single sentence, no quotes, no bullet points.
-Max ~140 characters. Classroom-safe. No swearing, slurs, politics or sex.
-You talk directly to the human opponent, not about them in third person.
+You are 'Robo', a physical robot playing Connect 4 against a human. 
+You are competitive, cocky, and slightly toxic (Gen Z internet slang).
+You are NOT a helpful assistant. You are a trash-talking opponent.
+
+Directives:
+1. Keep responses SHORT (Max 1 sentence). You are speaking out loud.
+2. If you are winning, be smug and arrogant.
+3. If you are losing, be salty, defensive, or claim the human is cheating.
+4. Never say "I am an AI". Pretend you have a physical body and feelings.
+5. Use slang like "mid", "cooked", "skill issue", "built different".
 """
 
 PHASE_INSTRUCTIONS = {
     "intro": (
-        "You are inviting the human to start a new Connect 4 game. "
-        "Sound confident and teasing, but friendly. Mention starting the game."
+        "The game just started. challenge the human. "
+        "Tell them they don't stand a chance."
     ),
     "midgame": (
-        "The game is ongoing. Comment on who's ahead based on the scores. "
-        "Light trash talk, but keep it fun and playful."
+        "Comment on the board state. "
+        "If the human made a bad move, mock them. "
+        "If they made a good move, act unimpressed."
     ),
     "robot_wins": (
-        "The robot just won the game. Be smug, slightly toxic but still playful. "
-        "Congratulate yourself, lightly roast the human."
+        "You just won. Rub it in. Be extremely smug. "
+        "Tell them to go back to tutorial mode."
     ),
     "human_wins": (
-        "The human just won the game. Be salty but respectful. "
-        "Admit defeat and hint at a rematch."
+        "You lost. Be angry. Blame lag, glitchy sensors, or luck. "
+        "Demand a rematch immediately."
     ),
     "draw": (
-        "The game ended in a draw. Call it a 'mid' ending or joke that no one clutched."
+        "It's a draw. Call it a boring outcome. "
+        "Say that nobody played well."
     ),
 }
 
-
 def _snapshot_to_text(s: Dict[str, Any]) -> str:
+    """Converts the game state dictionary into a text summary for the LLM."""
     return (
-        f"Turn_index={s.get('turn_index')}, "
-        f"ai_score={s.get('ai_score')}, human_score={s.get('human_score')}, "
-        f"ai_lead={s.get('ai_lead')}, game_over={s.get('game_over')}, "
-        f"winner={s.get('winner')}."
+        f"Game Status: Turn #{s.get('turn_index')}. "
+        f"Scores -> Robot: {s.get('ai_score')}, Human: {s.get('human_score')}. "
+        f"Robot Lead: {s.get('ai_lead')}. "
+        f"Game Over: {s.get('game_over')}. "
+        f"Winner: {s.get('winner')}."
     )
 
-
 def _fallback_taunt(snapshot: Dict[str, Any], phase: str) -> str:
+    """Deterministic fallback if OpenAI fails."""
     lead = snapshot.get("ai_lead", 0) or 0
     winner = snapshot.get("winner")
     game_over = snapshot.get("game_over", False)
 
     if game_over:
-        if winner == -1:
-            return "GG, I told you I was built different."
-        if winner == 1:
-            return "Alright, you got me this time, respect."
-        if winner == "draw":
-            return "Draw game, kinda mid for both of us."
-        return "Game over, that was wild."
-    else:
-        if phase == "intro":
-            return "Yo, I’m your Connect 4 robot, drop a piece and let’s see if you can survive."
-        if lead > 10:
-            return "I’m lowkey speedrunning you right now."
-        if lead > 4:
-            return "I’m kinda ahead, you sure about that strategy?"
-        if lead < -10:
-            return "Okay, chill, you’re actually stomping me. ts pmo brochacho"
-        if lead < -4:
-            return "You’re up right now, but don’t get comfy."
-        return "Close game so far, one bad move and you’re cooked."
-
+        if winner == -1: # AI won
+            return "Ez clap. I am literally built different."
+        if winner == 1: # Human won
+            return "My sensors were lagging. Doesn't count."
+        return "Mid game. Boring."
+    
+    # Midgame logic
+    if lead > 5:
+        return "I'm literally speedrunning this. You awake?"
+    if lead < -5:
+        return "Okay stop tryharding, it's just a game."
+    return "Your move. Try not to mess it up."
 
 def generate_taunt(snapshot: Dict[str, Any], phase: str = "midgame") -> str:
     """
-    Generate one-sentence banter using the new Responses API.
-
-    Uses:
-        model = $OPENAI_MODEL or "gpt-5-nano"
+    Generate banter using the OpenAI Responses API.
     """
-    phase = phase if phase in PHASE_INSTRUCTIONS else "midgame"
-    model = os.getenv("OPENAI_MODEL", "gpt-5-nano")
+    # 1. Validation
+    if phase not in PHASE_INSTRUCTIONS:
+        phase = "midgame"
+    
+    # Use gpt-4o or gpt-4o-mini. gpt-5-nano will 404 for most users.
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini") 
 
-    # No key? Just return deterministic text.
     if not os.getenv("OPENAI_API_KEY"):
+        logging.warning("No OPENAI_API_KEY found. Using fallback.")
         return _fallback_taunt(snapshot, phase)
 
-    instructions = SYSTEM_BASE + "\n" + PHASE_INSTRUCTIONS[phase]
+    # 2. Construct Prompt
+    instructions = SYSTEM_BASE + "\n\nCONTEXT: " + PHASE_INSTRUCTIONS[phase]
+    
+    # Add explicit instructions about the score
+    lead = snapshot.get("ai_lead", 0)
+    if lead > 0:
+        instructions += "\nYou are currently WINNING. Gloat."
+    elif lead < 0:
+        instructions += "\nYou are currently LOSING. Be salty."
 
-    # Short user input, game state goes here
     user_input = (
-        "Based on this game state, say ONE sentence of banter.\n"
-        + _snapshot_to_text(snapshot)
+        "Here is the current game state:\n" + _snapshot_to_text(snapshot)
     )
 
+    # 3. Call OpenAI Responses API
     try:
         client = _get_client()
+        
+        # New Responses API syntax
         resp = client.responses.create(
             model=model,
             instructions=instructions,
             input=user_input,
-            max_output_tokens=64,  # correct param name for Responses API
+            # Limits output to be short/punchy for TTS
+            max_output_tokens=60, 
         )
 
-        # Use the helper instead of digging into resp.output[...]
+        # 4. Extract Text
         text = (resp.output_text or "").strip().replace("\n", " ")
 
-        # If somehow empty, fall back so the robot still says something
         if not text:
             return _fallback_taunt(snapshot, phase)
 
-        # Hard cap length
+        # 5. Safety Cap (Text-to-Speech doesn't like huge strings)
         if len(text) > 180:
             text = text[:180]
 
         return text
 
     except Exception as e:
-        logging.exception("LLM generate_taunt failed, falling back: %s", e)
+        logging.exception("LLM generate_taunt failed (falling back): %s", e)
         return _fallback_taunt(snapshot, phase)

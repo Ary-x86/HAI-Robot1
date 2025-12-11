@@ -10,3 +10,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+#old robot files
+app/robot_client_old*
