@@ -3,30 +3,22 @@ import sys
 import json
 import time
 import requests
+import speech_recognition as sr  # NEW: Faster, simpler handling
 from dotenv import load_dotenv
 
 # Twisted (WAMP engine)
 from autobahn.twisted.component import Component, run
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet import threads, reactor
-# Import correct sleep
 from autobahn.twisted.util import sleep as tSleep
 
 # OpenAI
 from openai import OpenAI
 
-# Local Audio
-import sounddevice as sd
-
-# Add project root to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from app.audio_helper import AudioBuffer, RMS_THRESHOLD, SILENCE_DURATION, RUDE_SILENCE_DURATION, SAMPLE_RATE
-
 load_dotenv()
 
 # --- CONFIG ---
-USE_LOCAL_MIC = True  # <--- SET TO FALSE WHEN DEPLOYING TO PHYSICAL ROBOT
-
+USE_LOCAL_MIC = True 
 ROBOT_REALM = os.getenv("RIDK_REALM", "rie.693b0e88a7cba444073b9c99")
 WAMP_URL = os.getenv("RIDK_WAMP_URL", "ws://wamp.robotsindeklas.nl")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -34,64 +26,53 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 API_URL = "http://127.0.0.1:8000"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+recognizer = sr.Recognizer()
 
 # --- GLOBAL STATE ---
-audio_buf = AudioBuffer()
 current_game_state = {"ai_lead": 0, "game_over": False} 
 last_turn_index = -1 
-is_processing = False       
-interrupted = False         
+is_speaking = False
 
 def fetch_game_state():
     try:
-        res = requests.get(f"{API_URL}/state", timeout=1)
+        res = requests.get(f"{API_URL}/state", timeout=0.5) # Fast timeout
         if res.status_code == 200:
             return res.json()
     except Exception:
         pass
     return {}
 
-# --- OPENAI WORKER FUNCTIONS ---
-
-def transcribe_audio(filename):
+def generate_response(user_text):
+    """Send text + context to Responses API."""
     try:
-        print(f"[Brain] 🎤 Transcribing...")
-        with open(filename, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1", file=f
-            )
-        return transcript.text
-    except Exception as e:
-        print(f"[Brain] Whisper Error: {e}")
-        return ""
-
-def generate_response(user_text, game_state, is_rude):
-    try:
-        lead = game_state.get("ai_lead", 0)
+        # Get latest state just before generating
+        state = fetch_game_state()
+        lead = state.get("ai_lead", 0)
+        
         system_msg = (
-            "You are 'Robo', a cocky, annoying Connect 4 robot. "
-            "Keep responses SHORT (1 sentence). Speak for TTS. "
-            "React to the user's trash talk."
+            "You are 'Robo', a cocky, competitive robot playing Connect 4. "
+            "Keep responses SHORT (1 sentence). React to the user's trash talk."
         )
-        if is_rude: system_msg += " You are losing. Be defensive and interrupt."
+        
+        if lead < 0: system_msg += " You are losing. Be annoyed and defensive."
         elif lead > 0: system_msg += " You are winning. Be smug."
 
         context = f"Game Score Lead: {lead}. User said: {user_text}"
+
         response = client.responses.create(
             model=OPENAI_MODEL,
             instructions=system_msg,
-            input=context
+            input=context,
+            max_output_tokens=60 
         )
         return response.output_text
     except Exception as e:
         print(f"[Brain] LLM Error: {e}")
-        return "Whatever."
-
-# --- ASYNC PIPELINES ---
+        return ""
 
 @inlineCallbacks
 def game_loop(session):
-    global last_turn_index, current_game_state, is_processing
+    global last_turn_index, current_game_state
     print("[Brain] 🎮 Game Loop Active")
     
     while True:
@@ -103,106 +84,70 @@ def game_loop(session):
                 taunt = state.get("last_taunt", "")
                 
                 if turn > last_turn_index:
-                    print(f"[Brain] 🎲 New Turn: {turn}")
                     last_turn_index = turn
-                    if taunt and not is_processing:
+                    # Only speak move-taunts if we aren't already having a conversation
+                    if taunt and not is_speaking:
                         print(f"[Brain] 🤖 Robot says (Move): {taunt}")
                         yield session.call("rie.dialogue.say", text=taunt)
         except Exception as e:
-            print(f"[Brain] Poll error: {e}")
+            pass
         yield tSleep(1.0)
 
-@inlineCallbacks
-def process_conversation_pipeline(session, wav_file):
-    global is_processing, interrupted
-    is_processing = True
-    interrupted = False
-
-    # 1. Transcribe
-    user_text = yield threads.deferToThread(transcribe_audio, wav_file)
-    AudioBuffer.cleanup(wav_file)
-
-    if not user_text or not user_text.strip():
-        is_processing = False
-        return
-
-    print(f"[Brain] 🗣️ You said: '{user_text}'")
-
-    if interrupted:
-        print("[Brain] 🛑 Interrupted (Transcription)")
-        is_processing = False
-        return
-
-    # 2. LLM
-    ai_lead = current_game_state.get("ai_lead", 0)
-    is_rude = ai_lead < 0 
-    robot_reply = yield threads.deferToThread(generate_response, user_text, current_game_state, is_rude)
-
-    if interrupted:
-        print("[Brain] 🛑 Interrupted (Thinking)")
-        is_processing = False
-        return
-
-    # 3. Speak
-    if is_rude:
-        robot_reply = "Shhh! " + robot_reply
-        # Attempt gesture, but don't crash if fails
-        try: yield session.call("rom.optional.behavior.play", name="BlocklyShrug")
-        except: pass
-
-    print(f"[Brain] 🤖 Robot replies: '{robot_reply}'")
-    yield session.call("rie.dialogue.say", text=robot_reply)
-    is_processing = False
-
-def process_audio_chunk(raw_data, is_local_mic):
-    global is_processing, interrupted
+def listen_and_respond_loop(session):
+    """
+    Runs in a separate thread. 
+    Continuously listens to mic, transcribes, and speaks.
+    """
+    global is_speaking
     
-    # 1. Add chunk & get loudness
-    rms = audio_buf.add_chunk(raw_data, is_local_mic=is_local_mic)
-    now = time.time()
+    # Adjust for ambient noise once at startup
+    with sr.Microphone() as source:
+        print("[Brain] 🎧 Calibrating microphone for 1 second...")
+        recognizer.adjust_for_ambient_noise(source, duration=1)
+        print("[Brain] 👂 Listening! Speak now.")
 
-    # 2. Threshold Logic
-    if rms > RMS_THRESHOLD:
-        audio_buf.silence_start_time = now
-        # Barge-in
-        if is_processing:
-            print("!!! BARGE-IN DETECTED !!!")
-            interrupted = True
-    else:
-        # Silence detected
-        ai_lead = current_game_state.get("ai_lead", 0)
-        wait_limit = RUDE_SILENCE_DURATION if ai_lead < 0 else SILENCE_DURATION
-
-        if (now - audio_buf.silence_start_time > wait_limit) and len(audio_buf.buffer) > 10:
-            if not is_processing:
-                wav_file = audio_buf.save_to_wav()
-                audio_buf.clear()
-                if wav_file:
-                    # Trigger Async Pipeline via Twisted Reactor
-                    reactor.callLater(0, lambda: process_conversation_pipeline(session_global, wav_file))
-
-def local_mic_loop():
-    """
-    Reads from local sounddevice stream and feeds the logic.
-    """
-    # Open Stream
-    with sd.InputStream(callback=audio_buf.callback, channels=1, samplerate=SAMPLE_RATE):
-        print("[Brain] 🎧 Local Microphone Active. Speak into your laptop!")
         while True:
-            # Pull from the thread-safe queue in audio_helper
-            chunk = audio_buf.get_chunk_from_queue()
-            if chunk is not None:
-                # Process strictly on main thread logic
-                reactor.callFromThread(process_audio_chunk, chunk, True)
-            else:
-                time.sleep(0.01)
+            try:
+                # 1. Listen (Blocking call, efficient silence detection)
+                # timeout=None means wait forever for speech
+                # phrase_time_limit=5 means cut off after 5s of talking
+                audio = recognizer.listen(source, phrase_time_limit=5)
+                
+                # 2. Transcribe (Fast Google API, free & included in library)
+                # Much faster than uploading file to OpenAI Whisper
+                try:
+                    user_text = recognizer.recognize_google(audio)
+                    print(f"[Brain] 🗣️ You: {user_text}")
+                except sr.UnknownValueError:
+                    # Couldn't understand audio (silence/noise)
+                    continue 
 
-def on_robot_audio_frame(frame):
-    """Callback for WAMP audio stream"""
-    data = frame.get('data', {})
-    raw_bytes = data.get('body.head.front') or data.get('body.head.middle')
-    if raw_bytes:
-        process_audio_chunk(raw_bytes, False)
+                # 3. Interrupt Robot if it was speaking
+                if is_speaking:
+                    print("[Brain] 🛑 Interrupted!")
+                    # Send stop command to robot (Fire & Forget)
+                    reactor.callFromThread(session.call, "rie.dialogue.stop")
+                
+                is_speaking = True
+
+                # 4. Generate Response
+                # We use the existing OpenAI client function
+                reply = generate_response(user_text)
+                
+                if reply:
+                    print(f"[Brain] 🤖 Robot: {reply}")
+                    # Send speak command via Twisted Reactor to be thread-safe
+                    reactor.callFromThread(session.call, "rie.dialogue.say", text=reply)
+                    
+                    # Estimate speaking time (roughly) to unset flag
+                    # 1 word ~= 0.4 seconds
+                    speak_time = len(reply.split()) * 0.4
+                    time.sleep(speak_time) 
+                    is_speaking = False
+
+            except Exception as e:
+                print(f"[Brain] Error in loop: {e}")
+                is_speaking = False
 
 # --- WAMP SETUP ---
 
@@ -214,16 +159,13 @@ def main(session, details):
     session_global = session
     print(f"[Brain] Connected to Robot {ROBOT_REALM}")
 
-    # 1. Setup Audio Input
     if USE_LOCAL_MIC:
-        # Run local mic loop in a background thread so it doesn't block WAMP
-        reactor.callInThread(local_mic_loop)
+        # Start the listening loop in a background thread
+        reactor.callInThread(listen_and_respond_loop, session)
     else:
-        print("[Brain] Subscribing to Robot Microphones...")
-        yield session.subscribe(on_robot_audio_frame, "rom.sensor.hearing.stream")
-        yield session.call("rom.sensor.hearing.stream")
+        print("Remote robot mic implementation pending...")
 
-    # 2. Start Game Loop
+    # Start Game Loop
     yield game_loop(session)
 
 wamp = Component(
