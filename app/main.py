@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
+import asyncio
 
 
 from .game_logic import (
@@ -49,7 +50,7 @@ state = {
     "turn_index": 0,          # increases every change (moves + resets)
     # last line the robot should say about the game
     "last_taunt": (
-        "Yo, I’m your Connect 4 robot. Drop a piece and let’s see if you can keep up."
+        "Yo, I'm your connect six seven. uh- i mean connect four robot. Drop your piece brochacho and prepare to lose"
     ),
 }
 
@@ -209,7 +210,7 @@ async def index():
         if (state.winner === 1) {{
           txt = "You WON 🎉 (human)";
         }} else if (state.winner === -1) {{
-          txt = "Robot / AI won 😈";
+          txt = "ToxicBot won 😈";
         }} else {{
           txt = "Draw 🤝";
         }}
@@ -267,34 +268,25 @@ async def index():
 """
     return HTMLResponse(html)
 
-
 @app.get("/state")
 async def get_state():
     return _snapshot()
 
-
 @app.post("/reset")
 async def reset_game():
-    """
-    Reset to a fresh board and bump turn_index so the robot notices.
-    """
     state["board"] = new_board()
     state["current_player"] = HUMAN
     state["game_over"] = False
     state["winner"] = None
-    state["turn_index"] += 1
-    # Static intro line; could also call generate_taunt with phase="intro".
-    state["last_taunt"] = (
-        "New game, same robot. Drop your first chip if you’re ready to lose again."
-    )
+    state["last_taunt"] = "New game, same robot. Drop your first chip if you’re ready to lose again."
+    # IMPORTANT: Increment AFTER setting text
+    state["turn_index"] += 1 
     return _snapshot()
-
 
 @app.post("/move")
 async def play_move(req: MoveRequest):
     if state["game_over"]:
-        raise HTTPException(status_code=400, detail="Game already finished")
-
+        raise HTTPException(status_code=400, detail="Game finished")
     if state["current_player"] != HUMAN:
         raise HTTPException(status_code=400, detail="Not your turn")
 
@@ -307,16 +299,12 @@ async def play_move(req: MoveRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
     event_type = "midgame"
-
     winner = check_winner(board)
+    
     if winner is not None:
         state["game_over"] = True
         state["winner"] = winner
-        event_type = (
-            "human_wins" if winner == HUMAN
-            else "robot_wins" if winner == AI
-            else "draw"
-        )
+        event_type = "human_wins" if winner == HUMAN else "robot_wins" if winner == AI else "draw"
     else:
         # 2) AI move
         ai_col = get_ai_move(board)
@@ -325,30 +313,24 @@ async def play_move(req: MoveRequest):
         if winner2 is not None:
             state["game_over"] = True
             state["winner"] = winner2
-            event_type = (
-                "robot_wins" if winner2 == AI
-                else "human_wins" if winner2 == HUMAN
-                else "draw"
-            )
+            event_type = "robot_wins" if winner2 == AI else "human_wins" if winner2 == HUMAN else "draw"
 
-    # 3) Next human turn (even if game_over, this is irrelevant but harmless)
     state["current_player"] = HUMAN
 
-    # 4) New event index
-    state["turn_index"] += 1
-
-    # 5) Ask LLM for a line in a worker thread (so we don't block the event loop)
+    # 3) Generate Taunt FIRST
     snap_for_llm = _snapshot()
-    snap_for_llm.pop("last_taunt", None)  # not needed as input
+    snap_for_llm.pop("last_taunt", None)
 
     try:
-        state["last_taunt"] = await run_in_threadpool(
-            generate_taunt,
-            snap_for_llm,
-            event_type,
-        )
+        new_taunt = await run_in_threadpool(generate_taunt, snap_for_llm, event_type)
+        state["last_taunt"] = new_taunt
     except Exception as e:
-        # generate_taunt already has its own fallback, this is just paranoia
-        print("LLM error in /move:", e)
+        print("LLM error:", e)
+        # Fallback if LLM fails
+        state["last_taunt"] = "..." 
+
+    # 4) Increment turn index LAST
+    # This prevents the robot from reading the state before the new text is ready
+    state["turn_index"] += 1
 
     return _snapshot()
