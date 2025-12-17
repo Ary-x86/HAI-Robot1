@@ -1,33 +1,4 @@
 # robot/robot_brain.py
-#
-# High-level idea (architecture):
-# - We run TWO loops in parallel:
-#   1) game_loop(): polls your backend (/state) every ~0.5s to detect new turns, mood, game_over, etc.
-#      It drives "midgame" reactions (taunts + optional behaviors) and the long "game over" routine.
-#   2) listen_loop(): continuously listens to the microphone, transcribes speech, and decides whether
-#      to respond via LLM, do a special "blowout interrupt", or handle rematch YES/NO.
-#
-# Why two loops?
-# - The game state changes due to moves and backend logic; polling is easy and robust.
-# - Speech is event-driven (whenever the user talks); mixing that into the polling loop gets messy.
-#
-# Why this code feels more "human-like" / "natural":
-# - The robot has state-dependent mood (winning / losing / close) that changes how often it talks,
-#   how often it moves, and which kinds of sounds it plays.
-# - It has "opening hype": it talks a LOT at the beginning of the game, then gradually calms down.
-# - It has "bored/idle" behavior and "wait SFX" timers that trigger if the human stalls.
-# - It has rare "blowout interrupts": if it's winning/losing by a lot, it sometimes refuses to
-#   respond normally ("I'm trying to focus") and ignores what the user said, like a real competitor.
-# - It has cooldowns to avoid spam (SFX cooldown, behavior cooldown).
-#
-# Important fix included in this version:
-# - HARD REMATCH HANDLER (race-condition fix):
-#   Sometimes the user says "yes" right as the game ends. If the backend already says game_over=True
-#   but our game_loop hasn't processed that state yet, rematch_mode might still be False.
-#   That creates a race: the message goes to "gameplay" LLM instead of "rematch", so no reset happens.
-#   The fix: if the backend says game_over=True, we handle yes/no DIRECTLY in listen_loop (no LLM),
-#   and we force rematch_mode = True there. That makes rematch 100% reliable even if the user speaks
-#   during the ending sequence.
 
 import os
 import sys
@@ -41,9 +12,6 @@ import speech_recognition as sr
 from dotenv import load_dotenv
 
 # Twisted (WAMP engine)
-# - Autobahn + Twisted gives you a WAMP client that can call robot APIs safely.
-# - Note: listen_loop runs in a background thread, so it must use reactor.callFromThread
-#   when making WAMP calls.
 from autobahn.twisted.component import Component, run
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet import threads, reactor
@@ -56,15 +24,9 @@ load_dotenv()
 
 # top-level globals
 import re
-user_name = None  # we learn this once, then use it to personalize taunts/speech
+user_name = None
 
 def maybe_extract_name(text: str) -> str | None:
-    """
-    Extremely simple name extraction:
-    - Looks for "my name is X", "I am X", "I'm X"
-    - Keeps it intentionally strict (letters, numbers, underscore, dash) and short,
-      so we don't accidentally capture full sentences.
-    """
     t = (text or "").strip()
     patterns = [
         r"\bmy name is\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
@@ -77,25 +39,10 @@ def maybe_extract_name(text: str) -> str | None:
             return m.group(1)
     return None
 
-# If the model tries to ask for the name midgame, we block it.
 NAME_ASK_RE = re.compile(r"\b(what'?s|what is)\s+your\s+name\b|\bdrop\s+your\s+name\b", re.I)
-# Placeholders we might get from the LLM; we replace them if we know the user's name.
 PLACEHOLDER_RE = re.compile(r"\[player name\]|\[player_name\]|\{player_name\}|\{player name\}", re.I)
 
-# --- REMATCH "YES/NO" INTENT (race-condition fix) ---
-# We *intentionally* do this with regex rather than LLM:
-# - It's faster, deterministic, and doesn't fail if the LLM returns something weird.
-# - It also avoids the race where rematch_mode isn't flipped yet but backend game_over is true.
-YES_RE = re.compile(r"\b(yes|yeah|yep|sure|ok|okay|rematch|again|run it back|let'?s go)\b", re.I)
-NO_RE  = re.compile(r"\b(no|nah|nope|quit|stop|leave|exit)\b", re.I)
-
 def sanitize_midgame_taunt(t: str) -> str:
-    """
-    Keep midgame taunts safe + consistent:
-    - Replace placeholders with user_name if known
-    - Prevent "what's your name" spam
-    - Force it into one-line speech (robot TTS works better without newlines)
-    """
     global user_name
     t = (t or "").strip()
     if not t:
@@ -114,9 +61,6 @@ def sanitize_midgame_taunt(t: str) -> str:
 
 
 # --- OPENING HYPE (talk a lot early game) ---
-# This is a simple "personality curve":
-# - Early game: robot is extra chatty (confidence/hype)
-# - Later: calms down to baseline talk frequency
 OPENING_TURNS = 4          # first 4 turns -> very chatty
 OPENING_SPEAK_CHANCE = 0.95
 OPENING_FADE_TURNS = 6     # then fade down over next 6 turns to normal
@@ -125,10 +69,6 @@ def opening_speak_multiplier(turn: int) -> float:
     """
     turn: 0-based turn index from backend
     Returns a multiplier / override factor for early-game talking.
-
-    Returns:
-    - None: meaning "hard override talk chance to OPENING_SPEAK_CHANCE"
-    - float: multiplier applied to dynamic talk chance
     """
     if turn < 0:
         return 1.0
@@ -149,11 +89,6 @@ def opening_speak_multiplier(turn: int) -> float:
 
 
 # --- BLOWOUT INTERRUPTS (rare, human-like "not responding") ---
-# This is the "sometimes I just ignore you and focus" behavior.
-# Key constraints:
-# - Only happens when lead is extreme (>= 6 or <= -6)
-# - Only once per game per condition (once while losing big, once while winning big)
-# - When it triggers, we explicitly IGNORE the user's message (continue)
 BLOWOUT_LEAD = 6  # lead >= +6 = winning_big, lead <= -6 = losing_big
 
 LOSING_BIG_INTERRUPTS = [
@@ -171,14 +106,10 @@ WINNING_BIG_INTERRUPTS = [
 # Per-game flags (reset when a new game starts)
 used_losing_big_interrupt = False
 used_winning_big_interrupt = False
-_prev_game_over_seen = None  # helps detect True -> False transition after /reset
+_prev_game_over_seen = None
+
 
 def reset_per_game_flags():
-    """
-    Reset "once per game" behaviors.
-    Called when we detect a new game start (game_over True -> False),
-    and also directly after triggering /reset (extra safety).
-    """
     global used_losing_big_interrupt, used_winning_big_interrupt
     used_losing_big_interrupt = False
     used_winning_big_interrupt = False
@@ -194,28 +125,22 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 API_URL = "http://127.0.0.1:8000"
 
 # --- TUNING (BASELINES) ---
-# These are the "default personality parameters".
-# The dynamic_profile will shift these slightly based on lead/mood.
 MOVE_SPEAK_CHANCE = 0.33   # baseline; will be modulated dynamically
-BEHAVIOR_CHANCE   = 0.1    # baseline; will be modulated dynamically
+BEHAVIOR_CHANCE   = 0.1   # baseline; will be modulated dynamically
 SFX_CHANCE        = 0.25   # baseline; will be modulated dynamically
 
-# Idle behavior:
-# - If user stalls too long, the robot does something (sound + maybe a small move)
 IDLE_TIMEOUT = 20.0
 IDLE_INTERVAL = 15.0
 
 # --- ANTI-SPAM / WAIT TIMER ---
-# "wait_sfx" is a delayed sound that triggers if the user takes too long on the SAME turn.
 WAIT_SFX_CHANCE = 0.15     # baseline; will be modulated dynamically
 WAIT_SFX_DELAY_MIN = 4.0
 WAIT_SFX_DELAY_MAX = 40.0
 
-SFX_COOLDOWN = 10.0  # never play SFX more frequently than this
+SFX_COOLDOWN = 10.0
 
 
 # --- BEHAVIOR ANTI-SPAM ---
-# Robot motions are high-impact; we enforce stronger cooldowns than speech.
 BEHAVIOR_COOLDOWN = 25.0          # seconds between any two behaviors (big impact)
 TAG_BEHAVIOR_MAX_CHANCE = 0.12    # even if LLM tags, only do it sometimes
 TAG_BEHAVIOR_DELAY = 0.6          # wait a bit so speech isn't cut off
@@ -228,7 +153,6 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 recognizer = sr.Recognizer()
 
 # --- SOUND EFFECTS ---
-# Each category is a pool of URLs. We randomly pick one when playing that category.
 SOUNDS = {
     "WIN": [
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/tmp_7901-951678082.mp3",
@@ -271,8 +195,6 @@ SOUNDS = {
 }
 
 # --- BEHAVIORS ---
-# These are robot motion "macros" defined in the robot platform.
-# We choose different moves based on mood (winning/losing/annoyed/idle).
 MOVES = {
     "WIN_BIG": ["BlocklyDiscoDance", "BlocklyStarWars", "BlocklyMacarena"],
     "WIN_SMALL": ["BlocklyDab", "BlocklyHappy", "BlocklyApplause"],
@@ -282,15 +204,10 @@ MOVES = {
 }
 
 # --- GLOBAL STATE ---
-# Shared state across loops.
-# NOTE: These are accessed from different threads without locks.
-# For this use-case it’s usually fine because:
-# - We mainly do "best effort" gating (cooldowns, flags)
-# - Occasional off-by-one timing doesn't break safety
 current_game_state = {"ai_lead": 0, "game_over": False}
 last_turn_index = -1
-is_speaking = False            # used to avoid overlapping audio + SFX
-rematch_mode = False           # set when game ends; used to switch speech logic
+is_speaking = False
+rematch_mode = False
 last_interaction_time = time.time()
 
 # --- SHUTDOWN + WAIT TIMER + COOLDOWN ---
@@ -302,7 +219,6 @@ wait_sfx_category = "WAIT"
 last_sfx_time = 0.0
 
 # --- DYNAMIC PROFILE (UPDATED EACH TICK) ---
-# This dict is continuously overwritten by compute_dynamic_profile().
 dynamic_profile = {
     "mood": "close",
     "lead": 0,
@@ -337,16 +253,7 @@ def _mood_from_lead(lead: int) -> str:
 def compute_dynamic_profile(lead: int) -> dict:
     """
     Convert game lead into noticeable-but-not-insane probability shifts.
-
-    The goal is: "it feels aware of the game" without becoming chaotic/spammy.
-    We do that by:
-    - normalizing lead into [-1, 1]
-    - gently nudging baseline probabilities
-    - clamping everything to [0, 1]
-
-    Intuition:
-    - Winning => slightly more confident talk + slightly more celebration
-    - Losing  => slightly less confident talk + more "waiting / bored / coping" vibes
+    Baselines stay respected; everything is clamped to [0,1].
     """
     mood = _mood_from_lead(lead)
 
@@ -355,7 +262,7 @@ def compute_dynamic_profile(lead: int) -> dict:
     adv = _clamp(lead / 6.0, -1.0, 1.0)
 
     # More talk + more moves when winning, less when losing
-    move_speak = _clamp01(MOVE_SPEAK_CHANCE + 0.06 * adv)  # small shift, stays subtle
+    move_speak = _clamp01(MOVE_SPEAK_CHANCE + 0.06 * adv)  # ~0.27..0.39           # +/- ~0.18
     behavior    = _clamp01(BEHAVIOR_CHANCE   + 0.20 * max(0, adv) - 0.10 * max(0, -adv))
     # Slightly more SFX when emotional (close or losing), but never spammy due to cooldown anyway
     sfx         = _clamp01(SFX_CHANCE        + 0.10 * abs(adv) + (0.05 if mood == "close" else 0.0))
@@ -373,12 +280,10 @@ def compute_dynamic_profile(lead: int) -> dict:
 
 def choose_wait_sfx_category(mood: str) -> str:
     """
-    This is where the robot *feels* different (sound palette depends on mood):
+    This is where the robot *feels* different:
     - winning => celebratory / cocky (WIN)
     - close   => tension/annoy (ANNOY)
     - losing  => bored/deflated (WAIT)
-
-    This is a simple trick that makes the bot "feel alive" without extra LLM calls.
     """
     if mood in ("winning_big", "winning"):
         # Mostly WIN but sometimes ANNOY so it's not a casino
@@ -400,8 +305,6 @@ def dynamic_prompt_suffix(lead: int) -> str:
     """
     Very cheap win: the LLM prompt changes based on lead magnitude.
     No big refactor needed.
-
-    We DON'T rewrite the whole system prompt each time; we just append a mood hint.
     """
     mood = _mood_from_lead(lead)
     if mood == "winning_big":
@@ -419,7 +322,6 @@ def dynamic_prompt_suffix(lead: int) -> str:
 # -------------------------
 
 def request_shutdown(reason: str = ""):
-    # Unified shutdown so both threads + reactor stop cleanly.
     if reason:
         print(f"[Brain] Shutdown requested: {reason}")
     shutdown_event.set()
@@ -439,11 +341,6 @@ signal.signal(signal.SIGTERM, _sig_handler)
 # -------------------------
 
 def fetch_game_state():
-    """
-    Poll the backend for game state.
-    Expected keys (based on your usage):
-    - turn_index, game_over, last_taunt, ai_lead, winner, etc.
-    """
     try:
         res = requests.get(f"{API_URL}/state", timeout=0.5)
         if res.status_code == 200:
@@ -453,11 +350,6 @@ def fetch_game_state():
     return {}
 
 def trigger_reset():
-    """
-    Ask backend to reset the game.
-    NOTE: We keep this fire-and-forget; if it fails, game_over will stay true
-    and the rematch handler will keep prompting.
-    """
     try:
         requests.post(f"{API_URL}/reset", timeout=1)
     except Exception:
@@ -465,14 +357,8 @@ def trigger_reset():
 
 def generate_response(user_text, context_type="gameplay"):
     """
-    LLM response generator.
-
-    Two "modes":
-    - gameplay: short toxic trash-talk; optionally tags for robot behaviors
-    - rematch: constrained "YES/NO" decision in output
-
-    Even though we now handle game_over rematch directly (race fix),
-    we keep this mode for safety/fallback and because rematch_mode can still be used.
+    Same behavior, but now prompt style changes dynamically with lead.
+    Also keeps your model fallback.
     """
     try:
         if context_type == "rematch":
@@ -501,6 +387,7 @@ def generate_response(user_text, context_type="gameplay"):
             else:
                 system_msg += " If you don't know the user's name yet, ask once, then stop asking."
 
+
         try:
             response = client.responses.create(
                 model=OPENAI_MODEL,
@@ -510,7 +397,6 @@ def generate_response(user_text, context_type="gameplay"):
             )
             return response.output_text or ""
         except Exception as e:
-            # Basic fallback if model name is wrong/unavailable.
             msg = str(e).lower()
             if "model" in msg and ("not found" in msg or "404" in msg):
                 response = client.responses.create(
@@ -533,12 +419,6 @@ def generate_response(user_text, context_type="gameplay"):
 def schedule_wait_sfx(turn: int, profile: dict):
     """
     Schedules a delayed SFX for THIS turn.
-
-    Concept:
-    - When it's the user's "turn" or the game is waiting, the human might stall.
-    - So we schedule a sound that triggers after some random delay.
-    - If the turn changes or the robot speaks, we cancel it.
-
     Category + chance are dynamic based on mood.
     """
     global wait_sfx_due, wait_sfx_turn, wait_sfx_category
@@ -553,7 +433,6 @@ def schedule_wait_sfx(turn: int, profile: dict):
         wait_sfx_due = None
 
 def cancel_wait_sfx():
-    # Called whenever turn changes or game ends; prevents out-of-context sounds.
     global wait_sfx_due, wait_sfx_turn
     wait_sfx_due = None
     wait_sfx_turn = None
@@ -564,13 +443,7 @@ def cancel_wait_sfx():
 
 @inlineCallbacks
 def play_sfx(session, category, force=False):
-    """
-    Plays random sound w/ cooldown + dynamic chance + no overlap with speech.
-
-    Why:
-    - Sound effects add "texture" and make the robot feel reactive.
-    - Cooldown prevents it from becoming an annoying soundboard.
-    """
+    """Plays random sound w/ cooldown + dynamic chance + no overlap with speech."""
     global last_sfx_time
 
     if shutdown_event.is_set():
@@ -599,8 +472,6 @@ def perform_midgame_event(session, text, anim_name, sfx_category, profile: dict,
     """
     Midgame reactions after a move.
     Speech + behavior are dynamically modulated.
-
-    This is called from game_loop when a new turn is detected and last_taunt exists.
     """
     move_speak = float(profile.get("move_speak_chance", MOVE_SPEAK_CHANCE))
 
@@ -611,12 +482,10 @@ def perform_midgame_event(session, text, anim_name, sfx_category, profile: dict,
     else:
         move_speak = _clamp01(move_speak * mult)
 
-    behave = float(profile.get("behavior_chance", BEHAVIOR_CHANCE))
+    behave      = float(profile.get("behavior_chance", BEHAVIOR_CHANCE))
 
     global is_speaking
 
-    # Speech is probabilistic so it doesn't respond on every single move
-    # (that would feel robotic and spammy).
     if text and random.random() < move_speak:
         print(f"[Brain] 🤖 Speaking: {text}")
         is_speaking = True
@@ -625,23 +494,17 @@ def perform_midgame_event(session, text, anim_name, sfx_category, profile: dict,
         finally:
             is_speaking = False
 
+
     if sfx_category:
         yield play_sfx(session, sfx_category, force=True)
 
-    # Behaviors are also probabilistic and are kept rarer than speech.
     if anim_name and random.random() < behave:
         print(f"[Brain] 🕺 Performing: {anim_name}")
         yield session.call("rom.optional.behavior.play", name=anim_name, sync=True)
 
 @inlineCallbacks
 def perform_idle_action(session, profile: dict):
-    """
-    Triggers when bored; now reflects mood.
-
-    Why:
-    - Humans get impatient when the other player stalls.
-    - A subtle idle reaction makes the robot feel present even when nothing happens.
-    """
+    """Triggers when bored; now reflects mood."""
     mood = profile.get("mood", "close")
     print(f"[Brain] ⏳ Robot is bored... (mood={mood})")
 
@@ -663,20 +526,6 @@ def perform_idle_action(session, profile: dict):
 
 @inlineCallbacks
 def game_loop(session):
-    """
-    This loop is the "game event detector":
-    - It polls /state
-    - Detects new turns and game_over transitions
-    - Drives:
-      - scheduled wait SFX (stalling)
-      - idle actions (long silence)
-      - game-over routine
-      - midgame taunts/animations
-
-    Important:
-    - This loop is NOT responsible for listening to speech.
-    - Speech comes from listen_loop.
-    """
     global last_turn_index, current_game_state, rematch_mode, is_speaking, last_interaction_time, dynamic_profile
     print("[Brain] 🎮 Game Loop Active")
 
@@ -732,8 +581,6 @@ def game_loop(session):
                         rematch_mode = True
                         cancel_wait_sfx()
 
-                        # This is your "scripted" ending sequence.
-                        # Scripted content is good here because it is reliable and feels intentional.
                         if winner == -1:
                             yield play_sfx(session, "WIN", force=True)
                             yield session.call("rie.dialogue.say", text="Good game. Come on, let’s shake hands.")
@@ -777,14 +624,7 @@ def game_loop(session):
 
                         # We keep midgame SFX mostly off so it doesn't stack;
                         # the WAIT timer handles state-colored sounds.
-                        yield perform_midgame_event(
-                            session,
-                            taunt,
-                            anim,
-                            sfx_category=None,
-                            profile=dynamic_profile,
-                            turn=turn
-                        )
+                        yield perform_midgame_event(session, taunt, anim, sfx_category=None, profile=dynamic_profile, turn=turn)
 
                 # After reset happens (game_over false), leave rematch mode
                 if not game_over and rematch_mode:
@@ -800,18 +640,7 @@ def game_loop(session):
 
 
 def _should_allow_tag_behavior(anim: str) -> bool:
-    """
-    Make LLM-tagged behaviors a rare, state-aware surprise.
-
-    Why this exists:
-    - LLM sometimes outputs behavior tags like [DANCE]
-    - We don't want the robot to do a dance every time the LLM feels like it
-    - So we gate it through:
-      - a global cooldown
-      - mood appropriateness (no happy dance while losing)
-      - a small probability
-      - anti-repeat check (same move twice feels robotic)
-    """
+    """Make LLM-tagged behaviors a rare, state-aware surprise."""
     global last_behavior_time, last_behavior_name
 
     now = time.time()
@@ -857,19 +686,6 @@ def _should_allow_tag_behavior(anim: str) -> bool:
 
 
 def listen_loop(session):
-    """
-    This loop is the "speech brain".
-
-    Pipeline:
-    1) Listen for audio (short phrase_time_limit)
-    2) Speech-to-text via Google recognizer
-    3) Peek backend game state *immediately* (fresh truth)
-    4) Special handlers:
-       - HARD REMATCH (race condition fix): if game_over_now=True, parse YES/NO directly
-       - Blowout interrupts (win/lose by a lot): say a canned phrase + ignore input
-    5) If none of the above triggers, use LLM to generate a one-liner response
-    6) Optionally trigger a behavior tag (rare)
-    """
     global is_speaking, rematch_mode, last_interaction_time
 
     with sr.Microphone() as source:
@@ -888,9 +704,7 @@ def listen_loop(session):
                     text = recognizer.recognize_google(audio)
                     last_interaction_time = time.time()
                     print(f"[Brain] 🗣️ You: {text}")
-
-                    # Peek game state NOW (fresh backend truth).
-                    # This lets speech logic react correctly even if game_loop hasn't ticked yet.
+                    # Peek game state NOW to decide "blowout interrupt"
                     state = fetch_game_state()
                     lead_now = int(state.get("ai_lead", 0) or 0)
                     game_over_now = bool(state.get("game_over", False))
@@ -905,71 +719,7 @@ def listen_loop(session):
                             reset_per_game_flags()
                         _prev_game_over_seen = game_over_now
 
-                    # ------------------------------------------------------------------
-                    # HARD REMATCH HANDLER (race-condition fix)
-                    #
-                    # Problem:
-                    # - User says "yes" exactly when the game ends.
-                    # - Backend already says game_over=True.
-                    # - But game_loop hasn't processed it yet -> rematch_mode might still be False.
-                    # - Then we send text to gameplay LLM, and reset never triggers.
-                    #
-                    # Fix:
-                    # - If backend says game_over_now=True, we treat rematch as active RIGHT HERE.
-                    # - We parse YES/NO deterministically using regex and trigger reset immediately.
-                    # - This path avoids the LLM entirely, so it can't "forget" to output ACTION_RESET.
-                    # ------------------------------------------------------------------
-                    if game_over_now:
-                        # Force rematch mode locally even if game_loop hasn't updated it yet.
-                        rematch_mode = True
-
-                        # If robot is currently talking, stop it so user input gets priority.
-                        if is_speaking:
-                            reactor.callFromThread(session.call, "rie.dialogue.stop")
-
-                        # "YES" -> reset the game
-                        if YES_RE.search(text):
-                            print("[Brain] 🟢 Rematch (direct)!")
-                            is_speaking = True
-                            reactor.callFromThread(session.call, "rie.dialogue.say", text="Here we go again!")
-                            trigger_reset()
-
-                            # We already know a new game is starting; reset once-per-game flags now.
-                            # (We ALSO reset on game_over True->False transition, so this is redundant safety.)
-                            reset_per_game_flags()
-
-                            rematch_mode = False
-                            time.sleep(0.6)
-                            is_speaking = False
-                            continue
-
-                        # "NO" -> quit / end interaction
-                        if NO_RE.search(text):
-                            print("[Brain] 🔴 Quit (direct).")
-                            is_speaking = True
-                            reactor.callFromThread(session.call, "rie.dialogue.say", text="Fine, bye.")
-                            reactor.callFromThread(
-                                session.call,
-                                "rom.optional.behavior.play",
-                                name="BlocklyCrouch",
-                                sync=False
-                            )
-                            time.sleep(0.6)
-                            is_speaking = False
-                            continue
-
-                        # Unclear answer -> prompt again (still no LLM)
-                        is_speaking = True
-                        reactor.callFromThread(
-                            session.call,
-                            "rie.dialogue.say",
-                            text="Say yes for a rematch, or no to quit."
-                        )
-                        time.sleep(0.6)
-                        is_speaking = False
-                        continue
-
-                    # Only do blowout interrupts midgame (not during rematch prompt, not after game_over)
+                    # Only do this midgame (not during rematch prompt, not after game_over)
                     global used_losing_big_interrupt, used_winning_big_interrupt
 
                     if (not rematch_mode) and (not game_over_now):
@@ -1004,7 +754,6 @@ def listen_loop(session):
                 except Exception:
                     continue
 
-                # Learn user name (only once). This is used for personalization.
                 global user_name
                 if user_name is None:
                     name = maybe_extract_name(text)
@@ -1012,23 +761,14 @@ def listen_loop(session):
                         user_name = name
                         print(f"[Brain] ✅ Learned user_name={user_name}")
 
-                # If robot is speaking, stop current speech so responses feel reactive.
+
                 if is_speaking:
                     reactor.callFromThread(session.call, "rie.dialogue.stop")
 
                 is_speaking = True
-
-                # PATCH 3 (extra safety):
-                # - Decide context based on rematch_mode *AND* fresh backend truth.
-                # - This prevents misrouting even if rematch_mode lags behind reality.
-                #   (We already handle game_over_now above, but this is a safe belt-and-suspenders.)
-                latest_state = fetch_game_state()
-                latest_game_over = bool(latest_state.get("game_over", False))
-                context = "rematch" if (rematch_mode or latest_game_over) else "gameplay"
-
+                context = "rematch" if rematch_mode else "gameplay"
                 reply = generate_response(text, context) or ""
 
-                # Behavior tags in the model output map to actual robot motions
                 anim = None
                 if "[DANCE]" in reply:
                     anim = random.choice(MOVES["WIN_BIG"])
@@ -1041,7 +781,6 @@ def listen_loop(session):
                 elif "[SAD]" in reply:
                     anim = random.choice(MOVES["LOSE"])
 
-                # Clean the actual spoken text by removing tags.
                 speech = (
                     reply.replace("[DANCE]", "")
                     .replace("[DAB]", "")
@@ -1051,13 +790,10 @@ def listen_loop(session):
                     .strip()
                 )
 
-                # LLM-based rematch handling still exists as fallback.
-                # In practice, the direct handler above should handle game_over reliably first.
                 if "ACTION_RESET" in reply:
                     print("[Brain] 🟢 Rematch!")
                     reactor.callFromThread(session.call, "rie.dialogue.say", text="Here we go again!")
                     trigger_reset()
-                    reset_per_game_flags()
                     rematch_mode = False
 
                 elif "ACTION_QUIT" in reply:
@@ -1070,10 +806,9 @@ def listen_loop(session):
                         print(f"[Brain] 🤖 Robot: {speech}")
                         reactor.callFromThread(session.call, "rie.dialogue.say", text=speech)
 
-                    # If an animation was requested and passes our gating, schedule it slightly after speech
-                    # so the audio doesn't get cut.
                     if anim and _should_allow_tag_behavior(anim):
                         reactor.callFromThread(reactor.callLater, TAG_BEHAVIOR_DELAY, do_behavior, session, anim)
+
 
                 time.sleep(1.0)
                 is_speaking = False
@@ -1084,7 +819,6 @@ def listen_loop(session):
     print("[Brain] listen_loop exited.")
 
 def do_behavior(session, name):
-    # Runs in reactor thread (scheduled by reactor.callLater)
     print(f"[Brain] 🕺 Triggered: {name}")
     session.call("rom.optional.behavior.play", name=name, sync=True)
 
@@ -1094,12 +828,6 @@ session_global = None
 
 @inlineCallbacks
 def main(session, details):
-    """
-    Entry point when WAMP connects.
-    - Set robot to a known baseline pose
-    - Start listen_loop in a thread if using local mic
-    - Start game_loop in the reactor
-    """
     global session_global
     session_global = session
     print(f"[Brain] Connected to Robot {ROBOT_REALM}")
