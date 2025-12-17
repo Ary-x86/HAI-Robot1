@@ -335,7 +335,7 @@ recognizer = sr.Recognizer()
 # --- SOUND EFFECTS ---
 # Each category is a pool of URLs. We randomly pick one when playing that category.
 SOUNDS = {
-    "WIN": [
+    "LOSE": [
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/tmp_7901-951678082.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/vine-boom.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/mi-bombo.mp3",
@@ -343,15 +343,15 @@ SOUNDS = {
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/let-me-know.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/meme-de-creditos-finales.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/rat-dance-music.mp3",
-        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/wrong-answer-sound-effect.mp3",
+        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/another-one_dPvHt2Z.mp3",
+        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/bye-bye-lumi-athena-sfx.mp3",     
     ],
-    "LOSE": [
+    "WIN": [
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/downer_noise.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/spongebob-fail.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/sponge-stank-noise.mp3",
-        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/another-one_dPvHt2Z.mp3",
-        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/baby-laughing-meme.mp3",
-        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/bye-bye-lumi-athena-sfx.mp3",
+        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/wrong-answer-sound-effect.mp3",
+        "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/baby-laughing-meme.mp3",     
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/ny-video-online-audio-converter.mp3",
         "https://github.com/Ary-x86/HAI-Robot1/raw/refs/heads/main/audio/sitcom-laughing-1.mp3",
     ],
@@ -1206,7 +1206,7 @@ def listen_loop(session):
 
     with sr.Microphone() as source:
         print("[Brain] 🎧 Calibrating...")
-        
+
         # ------------------------------------------------------------------
         # MIC TUNING
         #
