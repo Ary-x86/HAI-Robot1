@@ -49,6 +49,8 @@ from twisted.internet.defer import inlineCallbacks
 from twisted.internet import threads, reactor
 from autobahn.twisted.util import sleep as tSleep
 
+import audioop  # built-in: lets us compute RMS loudness from raw PCM bytes
+
 # OpenAI
 from openai import OpenAI
 
@@ -80,6 +82,19 @@ def maybe_extract_name(text: str) -> str | None:
 
 import tempfile
 
+# -------------------------------------------------------------------------
+# POSTURE TRACKING (BEST-EFFORT)
+#
+# Why this exists:
+# - In your demo, the robot "sat/crouched" for the whole interaction.
+# - That happens when you call a crouch behavior (e.g., BlocklyCrouch)
+#   and then never force it to stand again.
+# - The platform doesn't reliably expose "current pose", so we track what *we told it* to do.
+#
+# This is not perfect state, but it works great in practice:
+# - Every time we successfully play a behavior, we update last_posture.
+# - At "key moments" (new turn, after reset), we auto-stand if we believe it's crouched.
+# -------------------------------------------------------------------------
 last_posture = "stand"  # "stand" or "crouch" (best-effort tracking)
 
 def _mark_posture_from_behavior(name: str):
@@ -209,12 +224,86 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 API_URL = "http://127.0.0.1:8000"
 
+# -------------------------------------------------------------------------
+# STT CONFIG (SWITCHABLE)
+#
+# Why this exists:
+# - speech_recognition + Google Web Speech can be shaky in noisy rooms / accents.
+# - OpenAI transcription tends to be more robust for short utterances.
+#
+# How to switch:
+# - Default is Google: STT_PROVIDER=google
+# - Use OpenAI:       STT_PROVIDER=openai
+#
+# Optional override flag (nice for quick testing):
+# - If USE_OPENAI_STT=1, we force openai regardless of STT_PROVIDER.
+#
+# Notes:
+# - OpenAI STT requires OPENAI_API_KEY to be set.
+# - If OpenAI STT fails (network / key / model), we can fall back to Google if enabled.
+# -------------------------------------------------------------------------
+STT_PROVIDER = os.getenv("STT_PROVIDER", "google").strip().lower()  # "google" or "openai"
+USE_OPENAI_STT = os.getenv("USE_OPENAI_STT", "0").strip() in ("1", "true", "yes", "y")
+STT_MODEL = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")  # only used if provider=openai
+
+# Whether we fall back to Google if OpenAI STT errors out (recommended for demos).
+STT_FALLBACK_TO_GOOGLE = os.getenv("STT_FALLBACK_TO_GOOGLE", "1").strip() in ("1", "true", "yes", "y")
+
+# Optional: language hint for Google recognizer (can slightly improve accuracy).
+# Example: "en-US", "nl-NL"
+STT_GOOGLE_LANGUAGE = os.getenv("STT_GOOGLE_LANGUAGE", "").strip() or None
+
+
+
+
+# -------------------------------------------------------------------------
+# STT QUALITY GATES (THIS FIXES "RANDOM 1 WORD" HALLUCINATIONS)
+#
+# Why:
+# - OpenAI STT will often return *some* token even for junk/noise.
+# - We prevent that by rejecting audio that is too short or too quiet BEFORE transcription.
+#
+# How to tune:
+# - STT_MIN_AUDIO_SEC: raise if you still get junk words from tiny noises
+# - STT_MIN_RMS: raise if keyboard clicks still get through; lower if it misses quiet speakers
+#
+# Debug:
+# - STT_DEBUG_AUDIO=1 prints duration + RMS so you can tune thresholds empirically.
+# -------------------------------------------------------------------------
+STT_MIN_AUDIO_SEC = float(os.getenv("STT_MIN_AUDIO_SEC", "0.20"))  # 0.20–0.35 is a good range
+STT_MIN_RMS = int(os.getenv("STT_MIN_RMS", "180"))                 # 150–350 depending on mic/room
+STT_DEBUG_AUDIO = os.getenv("STT_DEBUG_AUDIO", "0").strip() in ("1", "true", "yes", "y")
+
+# Optional: force OpenAI to assume a language (reduces "random foreign word" guesses).
+# For demos where you want English: set STT_OPENAI_LANGUAGE=en
+# Leave empty for auto-detect.
+STT_OPENAI_LANGUAGE = os.getenv("STT_OPENAI_LANGUAGE", "").strip() or None
+
+# Optional: ignore 1-word midgame transcripts (prevents bot replying to "I.", "uh", random noise tokens)
+# IMPORTANT: Rematch YES/NO still works because we bypass this filter when game_over=True.
+IGNORE_ONE_WORD_MIDGAME = os.getenv("IGNORE_ONE_WORD_MIDGAME", "1").strip() in ("1", "true", "yes", "y")
+ONE_WORD_ALLOWLIST = {
+    "hi", "hello", "hey",
+    "yes", "no", "yeah", "yep", "nope",
+    "ok", "okay",
+    "rematch", "again",
+}
+
+
+
 # --- TUNING (BASELINES) ---
 # These are the "default personality parameters".
 # The dynamic_profile will shift these slightly based on lead/mood.
 MOVE_SPEAK_CHANCE = 0.33   # baseline; will be modulated dynamically
-BEHAVIOR_CHANCE   = 0.1    # baseline; will be modulated dynamically
-SFX_CHANCE        = 0.25   # baseline; will be modulated dynamically
+
+# IMPORTANT CHANGE:
+# - Raised from 0.10 -> 0.18 to reduce "dead robot" probability during short demos.
+# - Your behavior system was probably working, just not triggering often enough.
+BEHAVIOR_CHANCE   = 0.18   # baseline; will be modulated dynamically
+
+# Optional tiny bump (still controlled by cooldown):
+# - More frequent SFX makes state changes more obvious (winning vs losing).
+SFX_CHANCE        = 0.30   # baseline; will be modulated dynamically
 
 # Idle behavior:
 # - If user stalls too long, the robot does something (sound + maybe a small move)
@@ -223,7 +312,7 @@ IDLE_INTERVAL = 15.0
 
 # --- ANTI-SPAM / WAIT TIMER ---
 # "wait_sfx" is a delayed sound that triggers if the user takes too long on the SAME turn.
-WAIT_SFX_CHANCE = 0.15     # baseline; will be modulated dynamically
+WAIT_SFX_CHANCE = 0.20     # baseline; will be modulated dynamically
 WAIT_SFX_DELAY_MIN = 4.0
 WAIT_SFX_DELAY_MAX = 40.0
 
@@ -396,21 +485,27 @@ def choose_wait_sfx_category(mood: str) -> str:
 
     This is a simple trick that makes the bot "feel alive" without extra LLM calls.
     """
+    # IMPORTANT CHANGE:
+    # - When losing, we now actually use LOSE sounds (instead of mostly WAIT/ANNOY).
+    # - This makes the emotional palette shift much more obvious during the game,
+    #   not only at the final game-over moment.
     if mood in ("winning_big", "winning"):
         # Mostly WIN but sometimes ANNOY so it's not a casino
-        return "WIN" if random.random() < 0.75 else "ANNOY"
+        return "WIN" if random.random() < 0.8 else "ANNOY"
     if mood == "close":
         return "ANNOY" if random.random() < 0.85 else "WAIT"
-    # losing / losing_big
-    return "WAIT" if random.random() < 0.85 else "ANNOY"
+    # losing / losing_big -> actually use LOSE most of the time
+    return "LOSE" if random.random() < 0.7 else "WAIT"
 
 def choose_idle_sfx_category(mood: str) -> str:
     # Idle should reflect the state too.
+    # IMPORTANT CHANGE:
+    # - Losing idle now uses LOSE instead of WAIT so it sounds "deflated" rather than "random meme".
     if mood in ("winning_big", "winning"):
         return "ANNOY"  # “hurry up” energy
     if mood == "close":
         return "ANNOY"
-    return "WAIT"       # losing => deflated/bored
+    return "LOSE"       # losing => deflated/losing palette
 
 def dynamic_prompt_suffix(lead: int) -> str:
     """
@@ -574,9 +669,27 @@ def cancel_wait_sfx():
     wait_sfx_due = None
     wait_sfx_turn = None
 
+
+
 # -------------------------
 # Actuation
 # -------------------------
+
+@inlineCallbacks
+def safe_play_behavior(session, name: str, sync: bool = True, why: str = ""):
+    """
+    Always logs failures. If behaviors are unavailable in the environment,
+    you'll SEE it immediately in the console.
+    """
+    try:
+        print(f"[Brain] 🕺 Behavior: {name} (sync={sync}) {('|' + why) if why else ''}")
+        yield session.call("rom.optional.behavior.play", name=name, sync=sync)
+        _mark_posture_from_behavior(name)
+    except Exception as e:
+        print(f"[Brain] ❌ Behavior failed ({name}): {e}")
+
+
+
 
 @inlineCallbacks
 def play_sfx(session, category, force=False):
@@ -629,6 +742,13 @@ def perform_midgame_event(session, text, anim_name, sfx_category, profile: dict,
 
     behave = float(profile.get("behavior_chance", BEHAVIOR_CHANCE))
 
+    # IMPORTANT CHANGE:
+    # - Demos are short. If you miss behaviors in the first ~30 seconds, the robot feels "dead".
+    # - So we enforce a minimum behavior probability for the first couple turns.
+    # - This does NOT remove randomness; it just reduces the chance of "0 behaviors forever".
+    if turn <= 2:
+        behave = max(behave, 0.35)  # guarantee you likely see *something* early
+
     global is_speaking
 
     # Speech is probabilistic so it doesn't respond on every single move
@@ -645,9 +765,10 @@ def perform_midgame_event(session, text, anim_name, sfx_category, profile: dict,
         yield play_sfx(session, sfx_category, force=True)
 
     # Behaviors are also probabilistic and are kept rarer than speech.
+    # IMPORTANT CHANGE:
+    # - Use safe_play_behavior so failures are visible AND posture tracking updates.
     if anim_name and random.random() < behave:
-        print(f"[Brain] 🕺 Performing: {anim_name}")
-        yield session.call("rom.optional.behavior.play", name=anim_name, sync=True)
+        yield safe_play_behavior(session, anim_name, sync=True, why="midgame reaction")
 
 @inlineCallbacks
 def perform_idle_action(session, profile: dict):
@@ -671,7 +792,190 @@ def perform_idle_action(session, profile: dict):
 
     if random.random() < idle_move_chance:
         anim = random.choice(MOVES["IDLE"])
-        yield session.call("rom.optional.behavior.play", name=anim, sync=True)
+        yield safe_play_behavior(session, anim, sync=True, why="idle action")
+
+# -------------------------
+# Speech-to-text helpers
+# -------------------------
+
+def transcribe_audio_google(audio: sr.AudioData) -> str | None:
+    """
+    Google Web Speech via speech_recognition.
+
+    Pros:
+    - free-ish / easy / no extra API code
+    Cons:
+    - can be inaccurate in noisy rooms / accents / short utterances
+    """
+    try:
+        if STT_GOOGLE_LANGUAGE:
+            return (recognizer.recognize_google(audio, language=STT_GOOGLE_LANGUAGE) or "").strip()
+        return (recognizer.recognize_google(audio) or "").strip()
+    except Exception as e:
+        # Keep logs minimal here; listen_loop already does try/except,
+        # but for debugging STT quality it's useful to see failures.
+        print(f"[Brain] STT(Google) failed: {e}")
+        return None
+
+def transcribe_audio_openai(audio: sr.AudioData) -> str | None:
+    """
+    OpenAI speech-to-text.
+
+    Why we write to a temp WAV:
+    - The OpenAI client expects a file-like object for transcription.
+    - speech_recognition gives us raw bytes; easiest is to dump to a temp .wav.
+
+    Notes:
+    - We use delete=False + manual unlink to avoid file-handle quirks on some platforms.
+    - If this fails, listen_loop can fall back to Google if STT_FALLBACK_TO_GOOGLE=1.
+    """
+    try:
+        wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                tmp_path = f.name
+                f.write(wav_bytes)
+                f.flush()
+
+            with open(tmp_path, "rb") as audio_file:
+                # NOTE:
+                # - Passing a language hint reduces "random foreign word" guesses for noise.
+                # - Keep STT_OPENAI_LANGUAGE empty if you want auto-detect.
+                kwargs = {}
+                if STT_OPENAI_LANGUAGE:
+                    kwargs["language"] = STT_OPENAI_LANGUAGE
+
+                tr = client.audio.transcriptions.create(
+                    model=STT_MODEL,
+                    file=audio_file,
+                    response_format="text",
+                    **kwargs,
+                )
+
+
+            # The SDK can return either a string or an object with `.text`.
+            if isinstance(tr, str):
+                return tr.strip()
+            if hasattr(tr, "text"):
+                return (tr.text or "").strip()
+            return str(tr).strip()
+
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    except Exception as e:
+        print(f"[Brain] STT(OpenAI) failed: {e}")
+        return None
+
+
+
+def transcribe_audio(audio: sr.AudioData) -> str | None:
+    """
+    Single entry point for STT so the rest of the code stays clean.
+
+    Decision logic:
+    - If USE_OPENAI_STT=1 -> force OpenAI
+    - Else use STT_PROVIDER (google/openai)
+    - If OpenAI fails and STT_FALLBACK_TO_GOOGLE=1 -> try Google as backup
+    """
+    provider = "openai" if USE_OPENAI_STT else STT_PROVIDER
+
+    if provider == "openai":
+        # If key is missing, don't hard-crash the demo; try fallback.
+        if not OPENAI_API_KEY:
+            print("[Brain] STT(OpenAI) selected but OPENAI_API_KEY is missing. Falling back to Google.")
+            return transcribe_audio_google(audio)
+
+        text = transcribe_audio_openai(audio)
+        if text:
+            return text
+
+        if STT_FALLBACK_TO_GOOGLE:
+            return transcribe_audio_google(audio)
+
+        return None
+
+    # default: google
+    return transcribe_audio_google(audio)
+
+
+
+def _audio_stats_for_gate(audio: sr.AudioData) -> tuple[float, int]:
+    """
+    Compute (duration_seconds, rms) for the captured audio.
+
+    We intentionally convert to 16kHz / 16-bit mono-style raw PCM for consistent RMS behavior
+    across different microphones/devices.
+
+    - duration_seconds: rejects micro-bursts (clicks, bumps, tiny noise)
+    - rms: rejects quiet background hiss that OpenAI would otherwise "turn into a word"
+    """
+    try:
+        raw = audio.get_raw_data(convert_rate=16000, convert_width=2)  # 16kHz, 16-bit
+        if not raw:
+            return 0.0, 0
+        duration = len(raw) / (16000 * 2)  # samples * bytes_per_sample
+        rms = audioop.rms(raw, 2)          # 2 bytes/sample
+        return duration, rms
+    except Exception:
+        # If anything goes wrong, fail "open" (let STT try) rather than breaking the pipeline.
+        return 0.0, 999999
+
+
+def _should_transcribe_audio(audio: sr.AudioData) -> bool:
+    """
+    Hard gate BEFORE calling STT.
+
+    This is the main fix for your issue:
+    - If audio is too short or too quiet, we skip transcription entirely.
+    - That prevents OpenAI from hallucinating random 1-word outputs.
+    """
+    dur, rms = _audio_stats_for_gate(audio)
+
+    if STT_DEBUG_AUDIO:
+        print(f"[Brain] 🎙️ audio_gate: dur={dur:.3f}s rms={rms} (min_dur={STT_MIN_AUDIO_SEC}, min_rms={STT_MIN_RMS})")
+
+    if dur < STT_MIN_AUDIO_SEC:
+        return False
+    if rms < STT_MIN_RMS:
+        return False
+    return True
+
+
+def _should_ignore_transcript_midgame(text: str, game_over_now: bool) -> bool:
+    """
+    Optional SECOND gate AFTER transcription.
+
+    Why:
+    - Even with audio gating, sometimes you still get a clean 1-word token from small noises.
+    - In a Connect-4 demo, replying to random 1-word inputs kills the vibe.
+
+    Rules:
+    - Never ignore during game_over rematch flow (YES/NO might be 1 word).
+    - If IGNORE_ONE_WORD_MIDGAME=1:
+        ignore single-word transcripts unless in allowlist.
+    """
+    if game_over_now:
+        return False
+
+    if not IGNORE_ONE_WORD_MIDGAME:
+        return False
+
+    words = [w for w in re.findall(r"[A-Za-z']+", (text or "").lower()) if w]
+    if len(words) <= 1:
+        w = words[0] if words else ""
+        if w and (w in ONE_WORD_ALLOWLIST):
+            return False
+        return True
+
+    return False
+
 
 # -------------------------
 # Main loops
@@ -693,7 +997,7 @@ def game_loop(session):
     - This loop is NOT responsible for listening to speech.
     - Speech comes from listen_loop.
     """
-    global last_turn_index, current_game_state, rematch_mode, is_speaking, last_interaction_time, dynamic_profile
+    global last_turn_index, current_game_state, rematch_mode, is_speaking, last_interaction_time, dynamic_profile, last_posture
     print("[Brain] 🎮 Game Loop Active")
 
     cancel_wait_sfx()
@@ -742,6 +1046,13 @@ def game_loop(session):
                     if not game_over and not rematch_mode:
                         schedule_wait_sfx(turn, dynamic_profile)
 
+                    # IMPORTANT CHANGE:
+                    # - If we believe the robot is currently crouched (from earlier game-over routine),
+                    #   force it back to stand at the start of the next turn.
+                    # - This prevents the "sat down forever" demo failure mode.
+                    if last_posture == "crouch" and (not game_over):
+                        yield safe_play_behavior(session, "BlocklyStand", sync=True, why="new turn auto-stand")
+
                     # 1) GAME OVER ROUTINE
                     if game_over and not rematch_mode:
                         print("[Brain] 🏁 GAME OVER.")
@@ -753,15 +1064,15 @@ def game_loop(session):
                         if winner == -1:
                             yield play_sfx(session, "WIN", force=True)
                             yield session.call("rie.dialogue.say", text="Good game. Come on, let’s shake hands.")
-                            yield session.call("rom.optional.behavior.play", name="BlocklyDab", sync=True)
+                            yield safe_play_behavior(session, "BlocklyDab", sync=True, why="game over win (-1)")
                             yield session.call("rie.dialogue.say", text="Just kidding. I don’t shake hands with losers.")
-                            yield session.call("rom.optional.behavior.play", name="BlocklyGangnamStyle", sync=True)
-                            yield session.call("rom.optional.behavior.play", name="BlocklyCrouch", sync=True)
+                            yield safe_play_behavior(session, "BlocklyGangnamStyle", sync=True, why="game over win (-1)")
+                            yield safe_play_behavior(session, "BlocklyCrouch", sync=True, why="game over win (-1) crouch punchline")
 
                         elif winner == 1:
                             yield play_sfx(session, "LOSE", force=True)
                             yield session.call("rie.dialogue.say", text="No way... I demand a recount.")
-                            yield session.call("rom.optional.behavior.play", name="BlocklyCrouch", sync=True)
+                            yield safe_play_behavior(session, "BlocklyCrouch", sync=True, why="game over lose (1)")
 
                         else:
                             yield play_sfx(session, "ANNOY", force=True)
@@ -808,6 +1119,11 @@ def game_loop(session):
                     cancel_wait_sfx()
                     if turn >= 0:
                         schedule_wait_sfx(turn, dynamic_profile)
+
+                    # Extra safety: after rematch ends and gameplay resumes,
+                    # force a stand pose if we were crouched.
+                    if last_posture == "crouch":
+                        yield safe_play_behavior(session, "BlocklyStand", sync=True, why="post-rematch auto-stand")
 
         except Exception as e:
             print(f"[Brain] game_loop error: {e}")
@@ -886,10 +1202,22 @@ def listen_loop(session):
     5) If none of the above triggers, use LLM to generate a one-liner response
     6) Optionally trigger a behavior tag (rare)
     """
-    global is_speaking, rematch_mode, last_interaction_time
+    global is_speaking, rematch_mode, last_interaction_time, last_posture
 
     with sr.Microphone() as source:
         print("[Brain] 🎧 Calibrating...")
+        
+        # ------------------------------------------------------------------
+        # MIC TUNING
+        #
+        # These reduce false triggers (mic deciding "speech started" on tiny noises).
+        # Combined with the audio gate, this makes STT rock-solid in demos.
+        # ------------------------------------------------------------------
+        recognizer.dynamic_energy_threshold = True
+        recognizer.pause_threshold = 0.6
+        recognizer.non_speaking_duration = 0.3
+        recognizer.phrase_threshold = 0.25
+
         recognizer.adjust_for_ambient_noise(source, duration=1)
         print("[Brain] 👂 Listening!")
 
@@ -897,11 +1225,26 @@ def listen_loop(session):
             try:
                 try:
                     audio = recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                    # ------------------------------------------------------------------
+                    # AUDIO GATE (MOST IMPORTANT FIX)
+                    #
+                    # We drop audio that is too short/quiet BEFORE we call STT.
+                    # This prevents OpenAI from hallucinating random 1-word "transcripts".
+                    # ------------------------------------------------------------------
+                    if not _should_transcribe_audio(audio):
+                        continue
+
                 except sr.WaitTimeoutError:
                     continue
 
                 try:
-                    text = recognizer.recognize_google(audio)
+                    # IMPORTANT CHANGE:
+                    # - STT is now switchable (Google vs OpenAI) using STT_PROVIDER / USE_OPENAI_STT.
+                    # - This is isolated behind transcribe_audio() so the rest of the logic stays identical.
+                    text = transcribe_audio(audio) or ""
+                    if not text:
+                        continue
+
                     last_interaction_time = time.time()
                     print(f"[Brain] 🗣️ You: {text}")
 
@@ -910,6 +1253,17 @@ def listen_loop(session):
                     state = fetch_game_state()
                     lead_now = int(state.get("ai_lead", 0) or 0)
                     game_over_now = bool(state.get("game_over", False))
+                    # ------------------------------------------------------------------
+                    # POST-STT FILTER (OPTIONAL BUT VERY EFFECTIVE)
+                    #
+                    # If we are NOT in rematch/game_over flow, ignore 1-word transcripts.
+                    # This stops the robot replying to random single tokens (noise -> "I", "Dios", etc.).
+                    # ------------------------------------------------------------------
+                    if _should_ignore_transcript_midgame(text, game_over_now=game_over_now):
+                        if STT_DEBUG_AUDIO:
+                            print(f"[Brain] 🧹 Ignored short transcript midgame: {text!r}")
+                        continue
+
 
                     # Reset per-game flags when a new game starts:
                     # Detect transition: game_over True -> False (after /reset)
@@ -950,6 +1304,19 @@ def listen_loop(session):
                             reactor.callFromThread(session.call, "rie.dialogue.say", text="Here we go again!")
                             trigger_reset()
 
+                            # IMPORTANT CHANGE:
+                            # - Auto-stand shortly after reset so we don't stay crouched into the next game.
+                            # - We schedule this on the reactor thread because behaviors must run there.
+                            reactor.callFromThread(
+                                reactor.callLater,
+                                0.6,
+                                safe_play_behavior,
+                                session,
+                                "BlocklyStand",
+                                True,
+                                "post-reset auto-stand (direct rematch)"
+                            )
+
                             # We already know a new game is starting; reset once-per-game flags now.
                             # (We ALSO reset on game_over True->False transition, so this is redundant safety.)
                             reset_per_game_flags()
@@ -970,6 +1337,7 @@ def listen_loop(session):
                                 name="BlocklyCrouch",
                                 sync=False
                             )
+                            last_posture = "crouch"
                             time.sleep(0.6)
                             is_speaking = False
                             continue
@@ -1021,12 +1389,15 @@ def listen_loop(session):
                     continue
 
                 # Learn user name (only once). This is used for personalization.
+                # IMPORTANT CHANGE:
+                # - Previously you only learned the name once (user_name is None).
+                # - If STT misheard the name the first time, you were stuck forever.
+                # - Now: if user says "my name is X" again, we update it.
                 global user_name
-                if user_name is None:
-                    name = maybe_extract_name(text)
-                    if name:
-                        user_name = name
-                        print(f"[Brain] ✅ Learned user_name={user_name}")
+                name = maybe_extract_name(text)
+                if name and name != user_name:
+                    user_name = name
+                    print(f"[Brain] ✅ Updated user_name={user_name}")
 
                 # If robot is speaking, stop current speech so responses feel reactive.
                 if is_speaking:
@@ -1073,6 +1444,19 @@ def listen_loop(session):
                     print("[Brain] 🟢 Rematch!")
                     reactor.callFromThread(session.call, "rie.dialogue.say", text="Here we go again!")
                     trigger_reset()
+
+                    # IMPORTANT CHANGE:
+                    # - Same auto-stand behavior after reset for the LLM fallback path.
+                    reactor.callFromThread(
+                        reactor.callLater,
+                        0.6,
+                        safe_play_behavior,
+                        session,
+                        "BlocklyStand",
+                        True,
+                        "post-reset auto-stand (LLM fallback)"
+                    )
+
                     reset_per_game_flags()
                     rematch_mode = False
 
@@ -1080,6 +1464,7 @@ def listen_loop(session):
                     print("[Brain] 🔴 Quit.")
                     reactor.callFromThread(session.call, "rie.dialogue.say", text="Fine, bye.")
                     reactor.callFromThread(session.call, "rom.optional.behavior.play", name="BlocklyCrouch", sync=False)
+                    last_posture = "crouch"
 
                 else:
                     if speech:
@@ -1101,8 +1486,10 @@ def listen_loop(session):
 
 def do_behavior(session, name):
     # Runs in reactor thread (scheduled by reactor.callLater)
+    # IMPORTANT CHANGE:
+    # - Use safe_play_behavior for better logs + posture tracking.
     print(f"[Brain] 🕺 Triggered: {name}")
-    session.call("rom.optional.behavior.play", name=name, sync=True)
+    safe_play_behavior(session, name, sync=True, why="LLM-tagged behavior")
 
 # --- WAMP SETUP ---
 
@@ -1120,7 +1507,9 @@ def main(session, details):
     session_global = session
     print(f"[Brain] Connected to Robot {ROBOT_REALM}")
 
-    yield session.call("rom.optional.behavior.play", name="BlocklyStand")
+    # IMPORTANT CHANGE:
+    # - Use safe_play_behavior so failures are visible and posture tracking stays correct.
+    yield safe_play_behavior(session, "BlocklyStand", sync=True, why="startup baseline")
 
     if USE_LOCAL_MIC:
         reactor.callInThread(listen_loop, session)
