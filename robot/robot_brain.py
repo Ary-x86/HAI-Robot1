@@ -77,6 +77,19 @@ def maybe_extract_name(text: str) -> str | None:
             return m.group(1)
     return None
 
+
+import tempfile
+
+last_posture = "stand"  # "stand" or "crouch" (best-effort tracking)
+
+def _mark_posture_from_behavior(name: str):
+    global last_posture
+    if name in ("BlocklyCrouch", "BlocklySad"):
+        last_posture = "crouch"
+    elif name == "BlocklyStand":
+        last_posture = "stand"
+
+
 # If the model tries to ask for the name midgame, we block it.
 NAME_ASK_RE = re.compile(r"\b(what'?s|what is)\s+your\s+name\b|\bdrop\s+your\s+name\b", re.I)
 # Placeholders we might get from the LLM; we replace them if we know the user's name.
@@ -146,6 +159,9 @@ def opening_speak_multiplier(turn: int) -> float:
     # at fade_start: boost ~ (OPENING_SPEAK_CHANCE / baseline)
     alpha = (turn - fade_start) / float(OPENING_FADE_TURNS)  # 0..1
     return (1.0 - alpha) * 2.0 + alpha * 1.0  # 2x -> 1x (simple + safe)
+
+
+
 
 
 # --- BLOWOUT INTERRUPTS (rare, human-like "not responding") ---
