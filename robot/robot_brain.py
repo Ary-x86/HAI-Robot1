@@ -669,16 +669,19 @@ def generate_response(user_text, context_type="gameplay"):
                 "You can perform actions by ending your sentence with tags: "
                 "[DANCE], [DAB], [SNEEZE], [CLAP], [SAD]. "
                 "Tags are RARE: use a tag in at most 1 out of 10 replies, otherwise no tag. "
-                "Only use tags if the situation is extreme."
-                "ask for the users name at first and then keep calling them by their name"
-                "don't use emojis in the responses"
+                "Only use tags if the situation is extreme. "
+                "Don't use emojis in the responses. "
             ) + dynamic_prompt_suffix(lead)
 
             context = f"Score Lead: {lead}. User said: {user_text}"
+
+            # Name behavior:
+            # - If we know it: never ask again, always use it.
+            # - If we don't: ask once early, then stop asking (handled by the prompt).
             if user_name:
                 system_msg += f" The user's name is {user_name}. Never ask for their name. Always address them by name."
             else:
-                system_msg += " If you don't know the user's name yet, ask once, then stop asking."
+                system_msg += " If you don't know the user's name yet, ask once early in the game (not repeatedly)."
 
         try:
             response = client.responses.create(
@@ -704,6 +707,7 @@ def generate_response(user_text, context_type="gameplay"):
     except Exception as e:
         print(f"[Brain] LLM Error: {e}")
         return ""
+
 
 # -------------------------
 # WAIT SFX scheduling
@@ -1401,7 +1405,6 @@ def listen_loop(session):
                     # - This path avoids the LLM entirely, so it can't "forget" to output ACTION_RESET.
                     # ------------------------------------------------------------------
                     if game_over_now:
-                        
 
                         intent = rematch_intent(text)
 
@@ -1482,7 +1485,6 @@ def listen_loop(session):
                 # - Previously you only learned the name once (user_name is None).
                 # - If STT misheard the name the first time, you were stuck forever.
                 # - Now: if user says "my name is X" again, we update it.
-                global user_name
                 name = maybe_extract_name(text)
                 if name and name != user_name:
                     user_name = name
@@ -1501,8 +1503,6 @@ def listen_loop(session):
                 latest_state = fetch_game_state()
                 latest_game_over = bool(latest_state.get("game_over", False))
                 context = "rematch" if (rematch_mode or latest_game_over) else "gameplay"
-
-                
 
                 reply = generate_response(text, context) or ""
 
@@ -1574,6 +1574,7 @@ def listen_loop(session):
                 is_speaking = False
 
     print("[Brain] listen_loop exited.")
+
 
 def do_behavior(session, name):
     # Runs in reactor thread (scheduled by reactor.callLater)
