@@ -60,6 +60,16 @@ load_dotenv()
 import re
 user_name = None  # we learn this once, then use it to personalize taunts/speech
 
+ending_sequence_active = False
+pending_rematch_action = None  # "reset" | "quit" | None
+rematch_prompted = False
+
+
+
+BANNED_NAMES = {
+    "winning", "losing", "tired", "hungry", "here", "there", "okay", "ok", "yes", "no"
+}
+
 def maybe_extract_name(text: str) -> str | None:
     """
     Extremely simple name extraction:
@@ -68,16 +78,39 @@ def maybe_extract_name(text: str) -> str | None:
       so we don't accidentally capture full sentences.
     """
     t = (text or "").strip()
+    # ONLY explicit: avoids “I’m winning”, “I’m ready”, etc.
     patterns = [
-        r"\bmy name is\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
-        r"\bi am\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
-        r"\bi'm\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
+        r"\bmy name is\s+([A-Za-z][A-Za-z0-9_-]{1,20})\b",
+        r"\bcall me\s+([A-Za-z][A-Za-z0-9_-]{1,20})\b",
     ]
     for p in patterns:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
-            return m.group(1)
+            name = m.group(1)
+            if name.lower() in BANNED_NAMES:
+                return None
+            return name
     return None
+
+
+# def maybe_extract_name(text: str) -> str | None:
+#     """
+#     Extremely simple name extraction:
+#     - Looks for "my name is X", "I am X", "I'm X"
+#     - Keeps it intentionally strict (letters, numbers, underscore, dash) and short,
+#       so we don't accidentally capture full sentences.
+#     """
+#     t = (text or "").strip()
+#     patterns = [
+#         r"\bmy name is\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
+#         r"\bi am\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
+#         r"\bi'm\s+([A-Za-z][A-Za-z0-9_-]{0,20})\b",
+#     ]
+#     for p in patterns:
+#         m = re.search(p, t, flags=re.IGNORECASE)
+#         if m:
+#             return m.group(1)
+#     return None
 
 
 import tempfile
@@ -108,7 +141,11 @@ def _mark_posture_from_behavior(name: str):
 # If the model tries to ask for the name midgame, we block it.
 NAME_ASK_RE = re.compile(r"\b(what'?s|what is)\s+your\s+name\b|\bdrop\s+your\s+name\b", re.I)
 # Placeholders we might get from the LLM; we replace them if we know the user's name.
-PLACEHOLDER_RE = re.compile(r"\[player name\]|\[player_name\]|\{player_name\}|\{player name\}", re.I)
+PLACEHOLDER_RE = re.compile(
+    r"\[player name\]|\[player_name\]|\{player_name\}|\{player name\}|\[User's Name\]|\[user's name\]",
+    re.I
+)
+
 
 # --- REMATCH "YES/NO" INTENT (race-condition fix) ---
 # We *intentionally* do this with regex rather than LLM:
@@ -116,6 +153,37 @@ PLACEHOLDER_RE = re.compile(r"\[player name\]|\[player_name\]|\{player_name\}|\{
 # - It also avoids the race where rematch_mode isn't flipped yet but backend game_over is true.
 YES_RE = re.compile(r"\b(yes|yeah|yep|sure|ok|okay|rematch|again|run it back|let'?s go)\b", re.I)
 NO_RE  = re.compile(r"\b(no|nah|nope|quit|stop|leave|exit)\b", re.I)
+
+
+YES_SET = {"yes", "yeah", "yep", "sure", "rematch", "again", "okay", "ok"}
+NO_SET  = {"no", "nah", "nope", "quit", "stop", "exit", "leave"}
+FILLER  = {"please", "bro", "man", "alright"}
+
+def rematch_intent(text: str) -> str | None:
+    s = re.sub(r"[^a-zA-Z' ]+", " ", (text or "").lower()).strip()
+    if not s:
+        return None
+
+    # allow multiword phrases but only if the whole utterance is basically that
+    if s in ("run it back", "lets go", "let's go"):
+        return "yes"
+
+    toks = [t for t in s.split() if t]
+    if not toks:
+        return None
+
+    # Key: reject “yeah he won” because it contains non-yes tokens
+    if len(toks) > 4:
+        return None
+
+    tokset = set(toks)
+    if tokset & YES_SET and tokset <= (YES_SET | FILLER):
+        return "yes"
+    if tokset & NO_SET and tokset <= (NO_SET | FILLER):
+        return "no"
+    return None
+
+
 
 def sanitize_midgame_taunt(t: str) -> str:
     """
@@ -1055,6 +1123,11 @@ def game_loop(session):
 
                     # 1) GAME OVER ROUTINE
                     if game_over and not rematch_mode:
+                        global ending_sequence_active, pending_rematch_action, rematch_prompted
+                        ending_sequence_active = True
+                        pending_rematch_action = None
+                        rematch_prompted = False
+
                         print("[Brain] 🏁 GAME OVER.")
                         rematch_mode = True
                         cancel_wait_sfx()
@@ -1069,14 +1142,40 @@ def game_loop(session):
                             yield safe_play_behavior(session, "BlocklyGangnamStyle", sync=True, why="game over win (-1)")
                             yield safe_play_behavior(session, "BlocklyCrouch", sync=True, why="game over win (-1) crouch punchline")
 
-                        elif winner == 1:
-                            yield play_sfx(session, "LOSE", force=True)
-                            yield session.call("rie.dialogue.say", text="No way... I demand a recount.")
-                            yield safe_play_behavior(session, "BlocklyCrouch", sync=True, why="game over lose (1)")
+                        elif winner == 1:  # USER WON, ROBOT LOST
+                            yield play_sfx(session, "LOSE", force=True)  # your goofy “robot lost” pool
+                            nm = user_name or "player"
+                            yield session.call("rie.dialogue.say", text=f"Okay {nm}… you got me. That was kinda clean.")
+                            yield safe_play_behavior(session, "BlocklyShrug", sync=True, why="game over user win (robot lose)")
+                            yield session.call("rie.dialogue.say", text="Run it back?")
+                            # (optional) end in stand so you don’t stay crouched
+                            yield safe_play_behavior(session, "BlocklyStand", sync=True, why="post-game posture reset")
+
 
                         else:
                             yield play_sfx(session, "ANNOY", force=True)
                             yield session.call("rie.dialogue.say", text="Draw game.")
+                        
+                        ending_sequence_active = False
+
+                        # If user already said a clean YES/NO during the cutscene, act now safely.
+                        if pending_rematch_action == "reset":
+                            yield session.call("rie.dialogue.say", text="Say less. Rematch.")
+                            yield threads.deferToThread(trigger_reset)
+                            reset_per_game_flags()
+                            rematch_mode = False
+                            pending_rematch_action = None
+                            continue
+
+                        if pending_rematch_action == "quit":
+                            yield session.call("rie.dialogue.say", text="Alright. We’re done.")
+                            pending_rematch_action = None
+                            continue
+
+                        # Otherwise ask normally:
+                        yield session.call("rie.dialogue.say", text="Do you want a rematch? Say yes or no.")
+                        rematch_prompted = True
+
 
                         yield tSleep(1.0)
                         yield session.call("rie.dialogue.say", text="Do you want a rematch? Say yes.")
@@ -1203,6 +1302,8 @@ def listen_loop(session):
     6) Optionally trigger a behavior tag (rare)
     """
     global is_speaking, rematch_mode, last_interaction_time, last_posture
+    global user_name, ending_sequence_active, pending_rematch_action, rematch_prompted
+
 
     with sr.Microphone() as source:
         print("[Brain] 🎧 Calibrating...")
@@ -1253,7 +1354,17 @@ def listen_loop(session):
                     state = fetch_game_state()
                     lead_now = int(state.get("ai_lead", 0) or 0)
                     game_over_now = bool(state.get("game_over", False))
-                    # ------------------------------------------------------------------
+
+                    # --- NAME LOCK (START-OF-GAME ONLY) ---
+                    # We only accept a name at the beginning of a game.
+                    # This prevents accidental captures like "I'm winning", "I'm tired", etc.
+                    turn_now = int(state.get("turn_index", -1) or -1)
+                    if (user_name is None) and (turn_now <= 0) and (not game_over_now) and (not rematch_mode):
+                        name = maybe_extract_name(text)
+                        if name:
+                            user_name = name
+                            print(f"[Brain] ✅ Locked user_name={user_name}")
+                    #-------------
                     # POST-STT FILTER (OPTIONAL BUT VERY EFFECTIVE)
                     #
                     # If we are NOT in rematch/game_over flow, ignore 1-word transcripts.
@@ -1290,67 +1401,45 @@ def listen_loop(session):
                     # - This path avoids the LLM entirely, so it can't "forget" to output ACTION_RESET.
                     # ------------------------------------------------------------------
                     if game_over_now:
-                        # Force rematch mode locally even if game_loop hasn't updated it yet.
-                        rematch_mode = True
+                        
 
-                        # If robot is currently talking, stop it so user input gets priority.
-                        if is_speaking:
-                            reactor.callFromThread(session.call, "rie.dialogue.stop")
+                        intent = rematch_intent(text)
 
-                        # "YES" -> reset the game
-                        if YES_RE.search(text):
-                            print("[Brain] 🟢 Rematch (direct)!")
+                        # During cutscene: only record, do NOT reset yet
+                        if ending_sequence_active:
+                            if intent == "yes":
+                                pending_rematch_action = "reset"
+                            elif intent == "no":
+                                pending_rematch_action = "quit"
+                            continue
+
+                        # After prompt (or if prompt flag lags): act immediately
+                        if intent == "yes":
+                            print("[Brain] 🟢 Rematch!")
                             is_speaking = True
                             reactor.callFromThread(session.call, "rie.dialogue.say", text="Here we go again!")
                             trigger_reset()
-
-                            # IMPORTANT CHANGE:
-                            # - Auto-stand shortly after reset so we don't stay crouched into the next game.
-                            # - We schedule this on the reactor thread because behaviors must run there.
-                            reactor.callFromThread(
-                                reactor.callLater,
-                                0.6,
-                                safe_play_behavior,
-                                session,
-                                "BlocklyStand",
-                                True,
-                                "post-reset auto-stand (direct rematch)"
-                            )
-
-                            # We already know a new game is starting; reset once-per-game flags now.
-                            # (We ALSO reset on game_over True->False transition, so this is redundant safety.)
                             reset_per_game_flags()
-
                             rematch_mode = False
+                            rematch_prompted = False
                             time.sleep(0.6)
                             is_speaking = False
                             continue
 
-                        # "NO" -> quit / end interaction
-                        if NO_RE.search(text):
-                            print("[Brain] 🔴 Quit (direct).")
+                        if intent == "no":
+                            print("[Brain] 🔴 Quit.")
                             is_speaking = True
                             reactor.callFromThread(session.call, "rie.dialogue.say", text="Fine, bye.")
-                            reactor.callFromThread(
-                                session.call,
-                                "rom.optional.behavior.play",
-                                name="BlocklyCrouch",
-                                sync=False
-                            )
-                            last_posture = "crouch"
                             time.sleep(0.6)
                             is_speaking = False
                             continue
 
-                        # Unclear answer -> prompt again (still no LLM)
-                        is_speaking = True
-                        reactor.callFromThread(
-                            session.call,
-                            "rie.dialogue.say",
-                            text="Say yes for a rematch, or no to quit."
-                        )
-                        time.sleep(0.6)
-                        is_speaking = False
+                        if rematch_prompted:
+                            # only nag if we actually prompted
+                            is_speaking = True
+                            reactor.callFromThread(session.call, "rie.dialogue.say", text="Say yes for a rematch, or no to quit.")
+                            time.sleep(0.6)
+                            is_speaking = False
                         continue
 
                     # Only do blowout interrupts midgame (not during rematch prompt, not after game_over)
@@ -1412,6 +1501,8 @@ def listen_loop(session):
                 latest_state = fetch_game_state()
                 latest_game_over = bool(latest_state.get("game_over", False))
                 context = "rematch" if (rematch_mode or latest_game_over) else "gameplay"
+
+                
 
                 reply = generate_response(text, context) or ""
 
